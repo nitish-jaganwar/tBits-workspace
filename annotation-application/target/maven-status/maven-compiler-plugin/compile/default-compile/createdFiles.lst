@@ -1,0 +1,5 @@
+com\annotator\api\AnnotationResource.class
+com\annotator\ws\AnnotationWebSocket.class
+com\example\rest\HelloResource.class
+com\annotator\config\DBConfig.class
+com\annotator\config\CorsFilter.class
