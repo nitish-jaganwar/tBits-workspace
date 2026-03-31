@@ -13,7 +13,7 @@ const API_BASE_URL = `${window.location.protocol}//${serverHost}${contextPath}`;
 
 // Dynamic WebSocket Path (ws for http, wss for https)
 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const WS_BASE_URL = `${wsProtocol}//${serverHost}${contextPath}/ws-annotator/${currentDocumentId}`;
+let WS_BASE_URL = `${wsProtocol}//${serverHost}${contextPath}/ws-annotator/${currentDocumentId}`;
 
 // Set PDF.js worker path (Use worker version 3.11.174 to match your library)
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -51,24 +51,23 @@ function escapeHTML(str) {
 		'&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
 	}[tag] || tag));
 }
-//NEW FEATURE: Har user ke naam ke hisaab se ek unique aur vibrant color assign karna
+
+// ── HELPER: USER COLOR ──
+// Generates a unique, consistent color based on the User's ID hash
 function getUserUniqueColor(userId) {
-    // Ye list un colors ki hai jo white PDF background par achhe se dikhte hain (White/Black ko hata diya hai)
-    const userColors = ['#f04f5a', '#f97316', '#18b87d', '#0ea5e9', '#3b6ef8', '#8b5cf6', '#ec4899'];
-    
-    let hash = 0;
-    for (let i = 0; i < userId.length; i++) {
-        hash = userId.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    
-    // Hash ko array ki length se limit karke ek color pick karo
-    const index = Math.abs(hash) % userColors.length;
-    return userColors[index];
+	const userColors = ['#f04f5a', '#f97316', '#18b87d', '#0ea5e9', '#3b6ef8', '#8b5cf6', '#ec4899'];
+	let hash = 0;
+	for (let i = 0; i < userId.length; i++) {
+		hash = userId.charCodeAt(i) + ((hash << 5) - hash);
+	}
+	const index = Math.abs(hash) % userColors.length;
+	return userColors[index];
 }
+
 // ── STATE VARIABLES ──
-let currentUser = 'nitish-test';
-let currentUserId = '007';
-let currentUserEmail = 'test@tbits.com';
+let currentUser = 'Guest';
+let currentUserId = 'guest';
+let currentUserEmail = '';
 
 let nativeWs = null;
 let canvas;
@@ -92,6 +91,8 @@ let pageData = {};
 let isFileLoaded = false;
 let autoSaveTimer = null; // Used for smart debounced saving
 let pingInterval = null;
+let wsReconnectAttempts = 0; // Track reconnect attempts for exponential backoff
+
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 1 — BOOTSTRAP & INITIALIZATION
@@ -110,15 +111,15 @@ window.addEventListener('DOMContentLoaded', () => {
 		// Use standard Auth logic (JWT/Headers) if no URL params
 		initializeUserIdentity();
 	}
-	// 🚀 NEW ADDITION: User ki ID ke hisaab se default color set karo
-	    currentColor = getUserUniqueColor(currentUserId);
-	    
-	    // UI mein color picker ka dabba bhi same color ka kar do
-	    const colorInput = document.getElementById('custom-color');
-	    if (colorInput) colorInput.value = currentColor;
 
-	    console.log(`👤 Current User: ${currentUser} | 📄 Document: ${currentDocumentId} | 🎨 Assigned Color: ${currentColor}`);
-	//console.log(`👤 Current User: ${currentUser} | 📄 Document: ${currentDocumentId}`);
+	// Assign a default unique color based on User ID
+	currentColor = getUserUniqueColor(currentUserId);
+
+	// Update the color picker UI to match the assigned color
+	const colorInput = document.getElementById('custom-color');
+	if (colorInput) colorInput.value = currentColor;
+
+	console.log(`👤 Current User: ${currentUser} | 📄 Document: ${currentDocumentId} | 🎨 Assigned Color: ${currentColor}`);
 
 	connectWebSocket();
 	canvas = new fabric.Canvas('doc-canvas', { selection: true });
@@ -145,17 +146,159 @@ window.addEventListener('DOMContentLoaded', () => {
 	setTimeout(loadFromServer, 500);
 });
 
-
 // ═══════════════════════════════════════════════════════════════
-// SECTION 2 — NATIVE WEBSOCKET CONNECTION (FIXED)
+// SECTION 2 — NATIVE WEBSOCKET CONNECTION
 // ═══════════════════════════════════════════════════════════════
 function connectWebSocket() {
-	const wsUrl = WS_BASE_URL;
+	// Pass the auth token securely to the Java Backend
+	const token = urlParams.get('token') || localStorage.getItem("app_token") || '';
+	const wsUrl = token ? `${WS_BASE_URL}?token=${encodeURIComponent(token)}` : WS_BASE_URL;
 	nativeWs = new WebSocket(wsUrl);
 
 	nativeWs.onopen = function() {
 		console.log(`✅ Connected to WebSocket: ${wsUrl}`);
-		// 🛑 ROOT CAUSE 1 KILLED: PING interval hata diya gaya hai. Ab Java backend crash nahi hoga!
+		// Reset reconnect attempts when connection is successful
+		wsReconnectAttempts = 0;
+	};
+
+	nativeWs.onmessage = function(event) {
+		const receivedData = JSON.parse(event.data);
+
+		if (!receivedData || !receivedData.shapeData) {
+			return;
+		}
+
+		if (receivedData.sender !== currentUser) {
+			console.log("📥 Incoming update from: " + receivedData.sender);
+
+			const action = receivedData.action;
+			const incomingAnno = receivedData.shapeData.annotation;
+			const incomingFabricJson = receivedData.shapeData.fabricShape;
+			const targetPage = incomingAnno.page || 1;
+
+			if (action === 'ADD' || action === 'UPDATE') {
+				annoCounter = Math.max(annoCounter, (incomingAnno.number || 0) + 1);
+
+				// 🚀 FIX: ALWAYS add/update the incoming comment in the main array, regardless of the page
+				const existingIndex = annotations.findIndex(a => a.id === incomingAnno.id);
+				if (existingIndex > -1) {
+					annotations[existingIndex] = incomingAnno;
+				} else {
+					annotations.push(incomingAnno);
+				}
+				//FIX: UI List & JSON counter always update, even if the shape is for a different page. This prevents confusion and keeps the user informed about all changes.
+				renderList();
+				updateJsonState();
+				/*if (targetPage === pageNum) {
+					// Both users are on the SAME page: Render shape and update UI immediately
+					if (incomingFabricJson) {
+						fabric.util.enlivenObjects([incomingFabricJson], function(objects) {
+							const newObj = objects[0];
+							const existingObj = canvas.getObjects().find(o => o.id === newObj.id);
+							if (existingObj) canvas.remove(existingObj);
+
+							canvas.add(newObj);
+							canvas.renderAll();
+							renderBadges();
+							renderList();
+							updateJsonState();
+							toast(`Update from ${receivedData.sender}`, '✨');
+						});
+					}
+				} */
+				if (targetPage === pageNum) {
+					// 🚀 FIX 2: Sidebar aur UI ko turant update karo, Canvas drawing ka wait mat karo!
+					renderList();
+					renderBadges();
+					updateJsonState();
+
+					// Ab Canvas par aaram se shape draw hone do
+					if (incomingFabricJson) {
+						fabric.util.enlivenObjects([incomingFabricJson], function(objects) {
+							const newObj = objects[0];
+							const existingObj = canvas.getObjects().find(o => o.id === newObj.id);
+							if (existingObj) canvas.remove(existingObj);
+
+							canvas.add(newObj);
+							canvas.renderAll();
+							toast(`Update from ${receivedData.sender}`, '✨');
+						});
+					}
+				} else {
+					// ══════════════════════════════════════════
+					// DIFFERENT PAGE: Save shape to memory to prevent screen flickering
+					// ══════════════════════════════════════════
+
+					// Update page-specific memory state for the shapes
+					if (!pageCanvasStates[targetPage]) {
+						pageCanvasStates[targetPage] = { version: '5.3.0', objects: [] };
+					}
+
+					if (incomingFabricJson) {
+						pageCanvasStates[targetPage].objects = pageCanvasStates[targetPage].objects
+							.filter(o => o.id !== incomingFabricJson.id);
+						pageCanvasStates[targetPage].objects.push(incomingFabricJson);
+					}
+
+					// Only update the JSON counter and notify the user (do not refresh the list or canvas)
+					updateJsonState();
+					toast(`Page ${targetPage}: update from ${receivedData.sender}`, '✨');
+				}
+
+			} else if (action === 'DELETE') {
+
+				// 🚀 FIX: ALWAYS remove the deleted annotation from the main array
+				annotations = annotations.filter(a => a.id !== incomingAnno.id);
+				// also update the JSON state to reflect the deletion across all pages, even if the user is on a different page. This ensures that when they navigate to that page, they see the most up-to-date information without any deleted annotations lingering in the list or memory.
+				renderList();
+				updateJsonState();
+				if (targetPage === pageNum) {
+					// SAME PAGE: Remove from active canvas and update UI
+					const existingObj = canvas.getObjects().find(o => o.id === incomingAnno.id);
+					if (existingObj) canvas.remove(existingObj);
+
+					canvas.renderAll();
+					renderBadges();
+					renderList();
+				} else {
+					// DIFFERENT PAGE: Remove from memory only
+					if (pageCanvasStates[targetPage]) {
+						pageCanvasStates[targetPage].objects = pageCanvasStates[targetPage].objects
+							.filter(o => o.id !== incomingAnno.id);
+					}
+				}
+
+				updateJsonState();
+				toast(`Deleted by ${receivedData.sender}`, '🗑');
+			}
+		}
+	};
+
+	nativeWs.onclose = function() {
+		if (!nativeWs._manualClose) {
+			// Exponential backoff formula (Max 30 seconds wait)
+			let backoffTime = Math.min(1000 * Math.pow(2, wsReconnectAttempts), 30000);
+			wsReconnectAttempts++;
+
+			console.warn(`❌ WebSocket Connection Lost. Reconnecting in ${backoffTime / 1000}s...`);
+			setTimeout(connectWebSocket, backoffTime);
+		}
+	};
+
+	nativeWs.onerror = function(error) {
+		console.error('❌ WebSocket Error:', error);
+	};
+}
+/*function connectWebSocket() {
+	// Pass the auth token securely to the Java Backend
+	const token = urlParams.get('token') || localStorage.getItem("app_token") || '';
+	const wsUrl = token ? `${WS_BASE_URL}?token=${encodeURIComponent(token)}` : WS_BASE_URL;
+	nativeWs = new WebSocket(wsUrl);
+
+	nativeWs.onopen = function() {
+		console.log(`✅ Connected to WebSocket: ${wsUrl}`);
+		// Reset reconnect attempts when connection is successful
+		wsReconnectAttempts = 0;
 	};
 
 	nativeWs.onmessage = function(event) {
@@ -176,7 +319,7 @@ function connectWebSocket() {
 				annoCounter = Math.max(annoCounter, (incomingAnno.number || 0) + 1);
 
 				if (targetPage === pageNum) {
-					// 🛑 ROOT CAUSE 2 KILLED: Sirf tabhi main array update karo jab dono SAME page par hon!
+					// Update main array only if both users are on the SAME page
 					const existingIndex = annotations.findIndex(a => a.id === incomingAnno.id);
 					if (existingIndex > -1) {
 						annotations[existingIndex] = incomingAnno;
@@ -224,7 +367,7 @@ function connectWebSocket() {
 						pageCanvasStates[targetPage].objects.push(incomingFabricJson);
 					}
 
-					// Memory update kar di, par UI refresh nahi karenge taaki screen kharab na ho
+					// Update memory without refreshing UI to prevent screen flickering
 					updateJsonState();
 					toast(`Page ${targetPage}: update from ${receivedData.sender}`, '✨');
 				}
@@ -258,16 +401,20 @@ function connectWebSocket() {
 	};
 
 	nativeWs.onclose = function() {
-		console.warn('❌ WebSocket Connection Lost. Reconnecting in 5 seconds...');
 		if (!nativeWs._manualClose) {
-			setTimeout(connectWebSocket, 5000);
+			// Exponential backoff formula (Max 30 seconds wait)
+			let backoffTime = Math.min(1000 * Math.pow(2, wsReconnectAttempts), 30000);
+			wsReconnectAttempts++;
+		    
+			console.warn(`❌ WebSocket Connection Lost. Reconnecting in ${backoffTime/1000}s...`);
+			setTimeout(connectWebSocket, backoffTime);
 		}
 	};
 
 	nativeWs.onerror = function(error) {
 		console.error('❌ WebSocket Error:', error);
 	};
-}
+}*/
 
 function broadcastAnnotationChange(action, annoObj) {
 	if (!nativeWs || nativeWs.readyState !== 1) return;
@@ -317,10 +464,11 @@ async function handleSaveToServer() {
 	// MULTI-PAGE FIX STEP 2: Retrieve page data from memory
 	annotations.forEach(a => {
 		let targetPage = a.page || 1;
-		let pageData = pageCanvasStates[targetPage];
+		// Avoid variable shadowing by renaming 'pageData' to 'canvasPageState'
+		let canvasPageState = pageCanvasStates[targetPage];
 
-		if (pageData && pageData.objects) {
-			let shape = pageData.objects.find(o => o.id === a.id);
+		if (canvasPageState && canvasPageState.objects) {
+			let shape = canvasPageState.objects.find(o => o.id === a.id);
 			if (shape) {
 				a.left = shape.left;
 				a.top = shape.top;
@@ -357,9 +505,13 @@ async function handleSaveToServer() {
 			console.log("☁ Auto-saved to database");
 		} else {
 			console.error(`Server error ${response.status}`);
+			// Warn user if server rejects the save
+			toast(`Save failed (Error ${response.status}). Retrying...`, '⚠️', 4000);
 		}
 	} catch (err) {
 		console.error('Save failed: ' + err.message);
+		// Critical warning if internet drops
+		toast('Network Error: Annotations not saved!', '❌', 5000);
 	}
 }
 
@@ -452,49 +604,49 @@ async function loadFromServer() {
 // SECTION 5 — USER IDENTITY
 // ═══════════════════════════════════════════════════════════════
 function initializeUserIdentity() {
-    currentUser = "Guest";
-    currentUserId = "guest";
-    currentUserEmail = "";
+	currentUser = "Guest";
+	currentUserId = "guest";
+	currentUserEmail = "";
 
-    // 1. URL mein token check karo (Testing and  direct link )
-    const urlParams = new URLSearchParams(window.location.search);
-    const token = urlParams.get('token') || localStorage.getItem("app_token");
+	// 1. Check for token in URL (Testing and direct links)
+	const urlParams = new URLSearchParams(window.location.search);
+	const token = urlParams.get('token') || localStorage.getItem("app_token");
 
-    if (token) {
-        try {
-            // JWT Token 3 hisson mein bata hota hai (Header.Payload.Signature). 
-            // Humein beech wala hissa (Payload) chahiye jisme user data hota hai.
-            const base64Url = token.split('.')[1];
-            const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-            const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
-                return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-            }).join(''));
+	if (token) {
+		try {
+			// JWT Tokens consist of 3 parts (Header.Payload.Signature). 
+			// We extract the Payload containing user data.
+			const base64Url = token.split('.')[1];
+			const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+			const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+				return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+			}).join(''));
 
-            const payload = JSON.parse(jsonPayload);
+			const payload = JSON.parse(jsonPayload);
 
-            // OIDC standards ke hisaab se fields read karo
-            currentUser = payload.name || payload.preferred_username || "Reviewer";
-            currentUserId = payload.sub || payload.userId || "guest";
-            currentUserEmail = payload.email || "";
+			// Read fields according to OIDC standards
+			currentUser = payload.name || payload.preferred_username || "Reviewer";
+			currentUserId = payload.sub || payload.userId || "guest";
+			currentUserEmail = payload.email || "";
 
-            console.log(`✅ Identity fetched from OIDC Token -> User: ${currentUser}, ID: ${currentUserId}`);
-            return;
-        } catch (e) {
-            console.warn("⚠️ Invalid OIDC Token format", e);
-        }
-    }
+			console.log(`✅ Identity fetched from OIDC Token -> User: ${currentUser}, ID: ${currentUserId}`);
+			return;
+		} catch (e) {
+			console.warn("⚠️ Invalid OIDC Token format", e);
+		}
+	}
 
-    // 2. Agar token nahi mila, toh header mein HTML tags check karo (Fallback)
-    const nameElement = document.getElementById("header-user-name");
-    if (nameElement && nameElement.innerText) {
-        currentUser = nameElement.innerText.trim();
-        const idElement = document.getElementById("header-user-id");
-        currentUserId = idElement ? idElement.innerText.trim() : currentUser.toLowerCase().replace(/\s+/g, "_");
-        console.log("✅ Identity from HTML header");
-        return;
-    }
+	// 2. Fallback: Check for HTML tags in the header if token is missing
+	const nameElement = document.getElementById("header-user-name");
+	if (nameElement && nameElement.innerText) {
+		currentUser = nameElement.innerText.trim();
+		const idElement = document.getElementById("header-user-id");
+		currentUserId = idElement ? idElement.innerText.trim() : currentUser.toLowerCase().replace(/\s+/g, "_");
+		console.log("✅ Identity from HTML header");
+		return;
+	}
 
-    console.warn("⚠️ No OIDC token or identity found → Defaulting to Guest");
+	console.warn("⚠️ No OIDC token or identity found → Defaulting to Guest");
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -543,67 +695,66 @@ function setupDragDrop() {
 }
 
 function processFile(file) {
-    resetState();
-    isFileLoaded = true;
+	resetState();
+	isFileLoaded = true;
 
-    // File ka naam nikalo (e.g., "Report.pdf" -> "Report")
-    const cleanName = file.name.split('.').slice(0, -1).join('.');
-    fileName = cleanName;
-    document.getElementById('file-name-display').textContent = file.name;
-    document.getElementById('empty-state').style.display     = 'none';
-    document.getElementById('scroll-container').style.display = 'block';
-    
-    // 🚀 NEW FIX: Agar URL se filekey nahi aayi hai (matlab manual local upload hai)
-    const urlParams = new URLSearchParams(window.location.search);
-    if (!urlParams.has('filekey') && !urlParams.has('docId') && !externalFileUrl) {
-        
-        // 1. Ek unique Document ID banao (Jaise: MANUAL-Report-168594939)
-        currentDocumentId = `MANUAL-${cleanName.replace(/[^a-zA-Z0-9]/g, '')}-${Date.now()}`;
-        console.log("🆕 Manual Local Upload Detected. New Doc ID:", currentDocumentId);
-        
-        // 2. Purana default WebSocket connection band karo
-        if (nativeWs && nativeWs.readyState !== WebSocket.CLOSED) {
-            nativeWs._manualClose = true; // Taki wo apne aap reconnect na ho
-            nativeWs.close();
-        }
-        
-        // 3. Naye Document ID ke sath naya WebSocket Room join karo
-    //    WS_BASE_URL = `${wsProtocol}//${serverHost}${contextPath}/ws-annotator/${currentDocumentId}`;
-        connectWebSocket();
-    }
+	// Extract the file name (e.g., "Report.pdf" -> "Report")
+	const cleanName = file.name.split('.').slice(0, -1).join('.');
+	fileName = cleanName;
+	document.getElementById('file-name-display').textContent = file.name;
+	document.getElementById('empty-state').style.display = 'none';
+	document.getElementById('scroll-container').style.display = 'block';
 
-    showLoader(true);
-    const reader = new FileReader();
+	// Handle manual local uploads when 'filekey' is missing from the URL
+	const urlParams = new URLSearchParams(window.location.search);
+	if (!urlParams.has('filekey') && !urlParams.has('docId') && !externalFileUrl) {
 
-    if (file.type === 'application/pdf') {
-        fileType = 'pdf';
-        reader.onload = async f => {
-            const rawBuffer  = f.target.result;
-            originalPdfBytes = rawBuffer.slice(0);  
-            const pdfjsCopy  = rawBuffer.slice(0);  
-            try {
-                pdfDoc     = await pdfjsLib.getDocument({ data: new Uint8Array(pdfjsCopy) }).promise;
-                totalPages = pdfDoc.numPages;
-                pageNum    = 1;
-                await renderPdfPage(pageNum);
-            } catch (e) {
-                toast('Failed to load PDF: ' + e.message, '❌');
-                showLoader(false);
-            }
-        };
-        reader.readAsArrayBuffer(file);
-    } else {
-        fileType         = 'image';
-        originalPdfBytes = null;
-        reader.onload    = f => loadFabric(f.target.result);
-        reader.readAsDataURL(file);
-    }
+		// 1. Generate a unique Document ID
+		currentDocumentId = `MANUAL-${cleanName.replace(/[^a-zA-Z0-9]/g, '')}-${Date.now()}`;
+		console.log("🆕 Manual Local Upload Detected. New Doc ID:", currentDocumentId);
+
+		// 2. Close the old default WebSocket connection
+		if (nativeWs && nativeWs.readyState !== WebSocket.CLOSED) {
+			nativeWs._manualClose = true;
+			nativeWs.close();
+		}
+
+		// 3. Join a new WebSocket room with the new Document ID
+		connectWebSocket();
+	}
+
+	showLoader(true);
+	const reader = new FileReader();
+
+	if (file.type === 'application/pdf') {
+		fileType = 'pdf';
+		reader.onload = async f => {
+			const rawBuffer = f.target.result;
+			originalPdfBytes = rawBuffer.slice(0);
+			const pdfjsCopy = rawBuffer.slice(0);
+			try {
+				pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(pdfjsCopy) }).promise;
+				totalPages = pdfDoc.numPages;
+				pageNum = 1;
+				await renderPdfPage(pageNum);
+			} catch (e) {
+				toast('Failed to load PDF: ' + e.message, '❌');
+				showLoader(false);
+			}
+		};
+		reader.readAsArrayBuffer(file);
+	} else {
+		fileType = 'image';
+		originalPdfBytes = null;
+		reader.onload = f => loadFabric(f.target.result);
+		reader.readAsDataURL(file);
+	}
 }
 
 async function renderPdfPage(n) {
 	showLoader(true);
 	const page = await pdfDoc.getPage(n);
-	const vp = page.getViewport({ scale: 1.5 }); // ⚠️ Do not change this scale, otherwise coordinates will misalign
+	const vp = page.getViewport({ scale: 1.5 }); // Do not change this scale, otherwise coordinates will misalign
 
 	const tmp = document.createElement('canvas');
 	tmp.width = vp.width;
@@ -831,75 +982,45 @@ function setupDrawing() {
 	});
 }
 
-/*function finalizeAnno(obj, type) {
+function finalizeAnno(obj, type) {
 	activateTool('select');
 	const id = 'anno-' + Date.now();
 	obj.id = id;
-	const now = new Date().toISOString();
 
-	// Create a single annotation object
+	const now = new Date();
+
+	// Create non-draft comments immediately upon shape creation
 	const newAnno = {
 		id,
 		number: annoCounter++,
 		type: TYPE_LABELS[type] || type,
-		page: pageNum, // Link annotation to the current page
-		date: new Date().toLocaleString(),
-		text: '', isDraft: true, color: currentColor, fabricType: type,
+		page: pageNum,
+		date: now.toISOString(),
+		text: '',
+		isDraft: false, // The core state change
+		color: currentColor,
+		fabricType: type,
 		isImported: false,
 		createdBy: { id: currentUserId, name: currentUser, email: currentUserEmail },
-		createdAt: now,
+		createdAt: now.toISOString(),
 		lastEditedBy: null, lastEditedAt: null, editHistory: [], replies: []
 	};
 
-	// Push ONLY ONCE to fix the duplication bug
 	annotations.push(newAnno);
 
 	canvas.setActiveObject(obj);
-	showCommentInput(id, true);
+
+	// Update UI immediately without requiring a post action
+	renderBadges();
+	renderList();
 	updateJsonState();
 	triggerAutoSave();
-
-	// Broadcast immediately to second screen
 	broadcastAnnotationChange('ADD', newAnno);
-}*/
-function finalizeAnno(obj, type) {
-    activateTool('select');
-    const id = 'anno-' + Date.now();
-    obj.id = id;
-    
-    const now = new Date();
-    
-    // 🚀 FIX: isDraft ko false kar diya. Ab shape bante hi direct pakka comment banega!
-    const newAnno = {
-        id, 
-        number: annoCounter++, 
-        type: TYPE_LABELS[type] || type,
-        page: pageNum, 
-        date: now.toISOString(), // Standard date format for proper time parsing
-        text: '', 
-        isDraft: false, // <-- ASLI JADOO YAHAN HAI
-        color: currentColor, 
-        fabricType: type,
-        isImported: false,
-        createdBy: { id: currentUserId, name: currentUser, email: currentUserEmail },
-        createdAt: now.toISOString(),
-        lastEditedBy: null, lastEditedAt: null, editHistory: [], replies: [] 
-    };
 
-    annotations.push(newAnno);
-    
-    canvas.setActiveObject(obj);
-    
-    // Turant UI update karo (Bina post dabaye)
-    renderBadges();
-    renderList(); 
-    updateJsonState();
-    triggerAutoSave();
-    broadcastAnnotationChange('ADD', newAnno);
-
-    // Comment box open karo incase unhe abhi likhna ho
-    showCommentInput(id, true);
+	// Open comment box in case the user wants to add text
+	showCommentInput(id, true);
 }
+
 // ═══════════════════════════════════════════════════════════════
 // SECTION 8 — COMMENTS & CRUD
 // ═══════════════════════════════════════════════════════════════
@@ -965,25 +1086,14 @@ function hideCommentInput() {
 	renderList();
 }
 
-/*function cancelInput() {
-	const idx = annotations.findIndex(a => a.id === activeAnnoId);
-	if (idx > -1 && annotations[idx].isDraft) {
-		const obj = canvas.getObjects().find(o => o.id === activeAnnoId);
-		if (obj) canvas.remove(obj);
-		annotations.splice(idx, 1);
-	}
-	hideCommentInput(); hideCtx(); canvas.discardActiveObject(); canvas.renderAll();
-	renderBadges(); updateJsonState();
-}*/
 function cancelInput() {
-    // 🚀 FIX: Ab cancel dabane par shape delete nahi hogi, wo screen aur list mein rahegi.
-    // Sirf text input box hide ho jayega.
-    hideCommentInput(); 
-    hideCtx(); 
-    canvas.discardActiveObject(); 
-    canvas.renderAll();
-    renderBadges(); 
-    updateJsonState();
+	// Hide text input box on cancel without deleting the shape
+	hideCommentInput();
+	hideCtx();
+	canvas.discardActiveObject();
+	canvas.renderAll();
+	renderBadges();
+	updateJsonState();
 }
 
 function postComment() {
@@ -1022,11 +1132,19 @@ window.editComment = id => {
 	showCommentInput(id, false);
 };
 
-/*window.deleteComment = id => {
-	// Inform other users through WebSocket before deleting
+window.deleteComment = id => {
 	const annoToDelete = annotations.find(a => a.id === id);
 	if (annoToDelete) {
 		broadcastAnnotationChange('DELETE', annoToDelete);
+
+		// Clear the background memory for drawings on any page
+		const targetPage = annoToDelete.page || 1;
+		if (pageCanvasStates[targetPage] && pageCanvasStates[targetPage].objects) {
+			pageCanvasStates[targetPage].objects = pageCanvasStates[targetPage].objects.filter(o => o.id !== id);
+		}
+		if (pageData[targetPage] && pageData[targetPage].annotations) {
+			pageData[targetPage].annotations = pageData[targetPage].annotations.filter(a => a.id !== id);
+		}
 	}
 
 	const obj = canvas.getObjects().find(o => o.id === id);
@@ -1035,15 +1153,23 @@ window.editComment = id => {
 	canvas.renderAll(); renderList(); renderBadges(); updateJsonState();
 	toast('Deleted', '🗑');
 	triggerAutoSave();
-};*/
+};
 
-/*window.deleteActiveObject = function() {
+window.deleteActiveObject = function() {
 	const obj = canvas.getActiveObject(); if (!obj) return;
 
-	// Inform others when deleting using keyboard (Backspace/Delete)
 	const annoToDelete = annotations.find(a => a.id === obj.id);
 	if (annoToDelete) {
 		broadcastAnnotationChange('DELETE', annoToDelete);
+
+		// Clear memory when deleting via keyboard
+		const targetPage = annoToDelete.page || 1;
+		if (pageCanvasStates[targetPage] && pageCanvasStates[targetPage].objects) {
+			pageCanvasStates[targetPage].objects = pageCanvasStates[targetPage].objects.filter(o => o.id !== obj.id);
+		}
+		if (pageData[targetPage] && pageData[targetPage].annotations) {
+			pageData[targetPage].annotations = pageData[targetPage].annotations.filter(a => a.id !== obj.id);
+		}
 	}
 
 	canvas.remove(obj);
@@ -1052,53 +1178,6 @@ window.editComment = id => {
 	updateJsonState();
 	toast('Annotation deleted', '🗑');
 	triggerAutoSave();
-};*/
-window.deleteComment = id => {
-    const annoToDelete = annotations.find(a => a.id === id);
-    if (annoToDelete) {
-        broadcastAnnotationChange('DELETE', annoToDelete);
-        
-        // 🚀 NEW GHOST FIX: Agar drawing kisi bhi page par hai, uski background memory saaf karo!
-        const targetPage = annoToDelete.page || 1;
-        if (pageCanvasStates[targetPage] && pageCanvasStates[targetPage].objects) {
-            pageCanvasStates[targetPage].objects = pageCanvasStates[targetPage].objects.filter(o => o.id !== id);
-        }
-        if (pageData[targetPage] && pageData[targetPage].annotations) {
-            pageData[targetPage].annotations = pageData[targetPage].annotations.filter(a => a.id !== id);
-        }
-    }
-
-    const obj = canvas.getObjects().find(o => o.id === id);
-    if (obj) canvas.remove(obj);
-    annotations = annotations.filter(a => a.id !== id);
-    canvas.renderAll(); renderList(); renderBadges(); updateJsonState();
-    toast('Deleted', '🗑');
-    triggerAutoSave();
-};
-
-window.deleteActiveObject = function () {
-    const obj = canvas.getActiveObject(); if (!obj) return;
-    
-    const annoToDelete = annotations.find(a => a.id === obj.id);
-    if (annoToDelete) {
-        broadcastAnnotationChange('DELETE', annoToDelete);
-        
-        // 🚀 NEW GHOST FIX: Keyboard se delete karne par bhi memory saaf karo
-        const targetPage = annoToDelete.page || 1;
-        if (pageCanvasStates[targetPage] && pageCanvasStates[targetPage].objects) {
-            pageCanvasStates[targetPage].objects = pageCanvasStates[targetPage].objects.filter(o => o.id !== obj.id);
-        }
-        if (pageData[targetPage] && pageData[targetPage].annotations) {
-            pageData[targetPage].annotations = pageData[targetPage].annotations.filter(a => a.id !== obj.id);
-        }
-    }
-
-    canvas.remove(obj);
-    annotations = annotations.filter(a => a.id !== obj.id);
-    hideCtx(); hideCommentInput(); renderList(); renderBadges(); canvas.renderAll();
-    updateJsonState();
-    toast('Annotation deleted', '🗑');
-    triggerAutoSave(); 
 };
 
 window.addReply = function(parentId) {
@@ -1123,11 +1202,18 @@ window.addReply = function(parentId) {
 		renderList(); updateJsonState();
 		toast('Reply added', '💬');
 		triggerAutoSave();
+		// Since replies are part of the annotation object, we can broadcast an UPDATE action for the parent annotation to reflect the new reply in real-time for other users.
+		//FIX :
+		broadcastAnnotationChange('UPDATE', parent);
 	}
 };
 
-/*function renderList() {
+function renderList() {
+	/*const pub = annotations.filter(a => !a.isDraft);*/
+	//FIX : Saare pages ke comments dikhao aur unhe Page Number ke hisaab se sort kar do
 	const pub = annotations.filter(a => !a.isDraft);
+	pub.sort((a, b) => (a.page || 1) - (b.page || 1) || a.number - b.number);
+
 	document.getElementById('comment-count').textContent = pub.length;
 	const list = document.getElementById('comments-list');
 
@@ -1144,123 +1230,48 @@ window.addReply = function(parentId) {
 		const card = document.createElement('div');
 		card.className = 'comment-card' + (a.id === activeAnnoId ? ' active' : '');
 
-		const originTag = a.isImported ? `<span class="cc-origin-tag imported">📥 Imported</span>` : `<span class="cc-origin-tag new">✏ New</span>`;
+		// Clean origin tags
+		const originTag = a.isImported
+			? `<span style="font-size:9px; font-weight:700; color:#8b5cf6; background:#f5f3ff; padding:3px 6px; border-radius:4px; letter-spacing:0.5px;">📥 IMPORTED</span>`
+			: `<span style="font-size:9px; font-weight:700; color:#10b981; background:#ecfdf5; padding:3px 6px; border-radius:4px; letter-spacing:0.5px;"></span>`;
 
+		// Time formatting
+		let timeString = '';
+		try {
+			const d = new Date(a.createdAt || a.date);
+			timeString = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+		} catch (e) {
+			timeString = a.date.split('T')[0] || '';
+		}
+
+		// Replies formatting
 		let repliesHTML = '';
 		if (a.replies && a.replies.length > 0) {
-			repliesHTML = `<div class="cc-replies">` +
+			repliesHTML = `<div class="cc-replies" style="margin-top: 8px; border-left: 2px solid #e2e8f0; padding-left: 10px;">` +
 				a.replies.map(rep => {
 					const repAuthor = rep.createdBy ? rep.createdBy.name : (rep.author || 'Reviewer');
 					return `
-                    <div class="cc-reply-item">
-                        <div class="cc-reply-header">
-                            <span class="cc-reply-author">${escapeHTML(repAuthor)}</span>
-                            <span class="cc-reply-date">${(rep.date || rep.createdAt || '').split(',')[0]}</span>
+                    <div class="cc-reply-item" style="margin-bottom: 6px;">
+                        <div class="cc-reply-header" style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                            <span class="cc-reply-author" style="font-size: 11px; font-weight: 600; color: #475569;">${escapeHTML(repAuthor)}</span>
+                            <span class="cc-reply-date" style="font-size: 10px; color: #94a3b8;">${new Date(rep.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                         </div>
-                        <div class="cc-reply-text">${escapeHTML(rep.text)}</div>
+                        <div class="cc-reply-text" style="font-size: 12px; color: #334155;">${escapeHTML(rep.text)}</div>
                     </div>
                 `}).join('') + `</div>`;
 		}
 
 		const replyInputHTML = `
-            <div class="cc-reply-input-wrap" onclick="event.stopPropagation()">
-                <input type="text" id="reply-input-${a.id}" class="cc-reply-input" placeholder="Write a reply...">
-                <button class="cc-reply-btn" onclick="addReply('${a.id}')">Reply</button>
-            </div>
-        `;
-
-		const mainAuthor = a.createdBy ? a.createdBy.name : (a.author || 'Reviewer');
-		card.innerHTML = `
-            <div class="cc-top">
-                <div class="cc-badge" style="background:${a.color}">${a.number}</div>
-                <span class="cc-type-tag">${a.type}</span>
-                ${originTag}
-                <span class="cc-date">${(a.date || a.createdAt || '').split(',')[0]}</span>
-            </div>
-            <div class="cc-author"><span class="cc-author-icon">👤</span>${escapeHTML(mainAuthor)}</div>
-            <div class="cc-body">${escapeHTML(a.text)}</div>
-            ${repliesHTML}
-            ${replyInputHTML}
-            <div class="cc-actions">
-                <button class="cc-btn"     data-action="edit"   data-id="${a.id}" title="Edit">✏</button>
-                <button class="cc-btn del" data-action="delete" data-id="${a.id}" title="Delete">🗑</button>
-            </div>`;
-
-		card.addEventListener('click', e => {
-			const btn = e.target.closest('.cc-btn');
-			if (btn) {
-				const id = btn.dataset.id;
-				if (btn.dataset.action === 'edit') editComment(id);
-				if (btn.dataset.action === 'delete') deleteComment(id);
-				return;
-			}
-			const obj = canvas.getObjects().find(o => o.id === a.id);
-			if (obj) { canvas.setActiveObject(obj); canvas.renderAll(); }
-		});
-		list.appendChild(card);
-	});
-}
-*/
-function renderList() {
-    const pub  = annotations.filter(a => !a.isDraft);
-    document.getElementById('comment-count').textContent = pub.length;
-    const list = document.getElementById('comments-list');
-
-    if (!pub.length && document.getElementById('comment-input-section').style.display === 'none') {
-        list.innerHTML = `<div class="empty-comments">
-            <div class="empty-comments-icon">💬</div>
-            <div class="empty-comments-text">No comments yet.<br>Draw a shape to annotate.</div>
-        </div>`;
-        return;
-    }
-
-    list.innerHTML = '';
-    pub.forEach(a => {
-        const card = document.createElement('div');
-        card.className = 'comment-card' + (a.id === activeAnnoId ? ' active' : '');
-
-        // 🚀 FIX 1: Naye aur clean Tags (Bina ajeeb borders ke)
-        const originTag = a.isImported 
-            ? `<span style="font-size:9px; font-weight:700; color:#8b5cf6; background:#f5f3ff; padding:3px 6px; border-radius:4px; letter-spacing:0.5px;">📥 IMPORTED</span>` 
-            : `<span style="font-size:9px; font-weight:700; color:#10b981; background:#ecfdf5; padding:3px 6px; border-radius:4px; letter-spacing:0.5px;"></span>`;
-
-        // Time formatting
-        let timeString = '';
-        try {
-            const d = new Date(a.createdAt || a.date);
-            timeString = d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        } catch(e) {
-            timeString = a.date.split('T')[0] || '';
-        }
-
-        // Replies formatting
-        let repliesHTML = '';
-        if (a.replies && a.replies.length > 0) {
-            repliesHTML = `<div class="cc-replies" style="margin-top: 8px; border-left: 2px solid #e2e8f0; padding-left: 10px;">` + 
-                a.replies.map(rep => {
-                    const repAuthor = rep.createdBy ? rep.createdBy.name : (rep.author || 'Reviewer');
-                    return `
-                    <div class="cc-reply-item" style="margin-bottom: 6px;">
-                        <div class="cc-reply-header" style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-                            <span class="cc-reply-author" style="font-size: 11px; font-weight: 600; color: #475569;">${escapeHTML(repAuthor)}</span>
-                            <span class="cc-reply-date" style="font-size: 10px; color: #94a3b8;">${new Date(rep.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
-                        </div>
-                        <div class="cc-reply-text" style="font-size: 12px; color: #334155;">${escapeHTML(rep.text)}</div>
-                    </div>
-                `}).join('') + `</div>`;
-        }
-
-        const replyInputHTML = `
             <div class="cc-reply-input-wrap" style="display: flex; gap: 6px; margin-top: 8px;" onclick="event.stopPropagation()">
                 <input type="text" id="reply-input-${a.id}" class="cc-reply-input" placeholder="Write a reply..." style="flex: 1; padding: 6px 10px; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 12px; outline: none;">
                 <button class="cc-reply-btn" onclick="addReply('${a.id}')" style="background: #3b6ef8; color: white; border: none; padding: 0 12px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer;">Reply</button>
             </div>
         `;
 
-        const mainAuthor = a.createdBy ? a.createdBy.name : (a.author || 'Reviewer');
-        
-        // 🚀 FIX 2: Layout alignment ko inline CSS se ekdum perfect kiya gaya
-        card.innerHTML = `
+		const mainAuthor = a.createdBy ? a.createdBy.name : (a.author || 'Reviewer');
+
+		// Inline CSS for perfect layout alignment
+		card.innerHTML = `
             <div class="cc-top" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                 <div style="display: flex; align-items: center; gap: 6px;">
                     <div class="cc-badge" style="background:${a.color}; width: 22px; height: 22px; border-radius: 50%; color: white; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold;">${a.number}</div>
@@ -1288,21 +1299,51 @@ function renderList() {
                 <button class="cc-btn" data-action="edit" data-id="${a.id}" style="background: none; border: none; color: #64748b; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px; padding: 0;">✏️ Edit</button>
                 <button class="cc-btn del" data-action="delete" data-id="${a.id}" style="background: none; border: none; color: #ef4444; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px; padding: 0;">🗑️ Delete</button>
             </div>`;
-        
-        card.addEventListener('click', e => {
-            const btn = e.target.closest('.cc-btn');
-            if (btn) {
-                const id = btn.dataset.id;
-                if (btn.dataset.action === 'edit')   editComment(id);
-                if (btn.dataset.action === 'delete') deleteComment(id);
-                return;
-            }
-            const obj = canvas.getObjects().find(o => o.id === a.id);
-            if (obj) { canvas.setActiveObject(obj); canvas.renderAll(); }
-        });
-        list.appendChild(card);
-    });
+
+		/*	card.addEventListener('click', e => {
+				const btn = e.target.closest('.cc-btn');
+				if (btn) {
+					const id = btn.dataset.id;
+					if (btn.dataset.action === 'edit') editComment(id);
+					if (btn.dataset.action === 'delete') deleteComment(id);
+					return;
+				}
+				const obj = canvas.getObjects().find(o => o.id === a.id);
+				if (obj) { canvas.setActiveObject(obj); canvas.renderAll(); }
+			});
+			list.appendChild(card);*/
+		card.addEventListener('click', e => {
+			const btn = e.target.closest('.cc-btn');
+			if (btn) {
+				const id = btn.dataset.id;
+				if (btn.dataset.action === 'edit') editComment(id);
+				if (btn.dataset.action === 'delete') deleteComment(id);
+				return;
+			}
+
+			//FIX 2: SMART NAVIGATION (Click to Jump)
+			const targetPage = a.page || 1;
+
+			if (targetPage !== pageNum) {
+				// Agar comment dusre page ka hai, toh pehle us page par jump karo
+				toast(`Jumping to Page ${targetPage}...`, '📄', 1500);
+				changePageAndPreserveState(targetPage).then(() => {
+					// Page change hone ke baad thoda ruk kar shape select karo
+					setTimeout(() => {
+						const obj = canvas.getObjects().find(o => o.id === a.id);
+						if (obj) { canvas.setActiveObject(obj); canvas.renderAll(); }
+					}, 500);
+				});
+			} else {
+				// Agar same page par hain, toh seedha select karo
+				const obj = canvas.getObjects().find(o => o.id === a.id);
+				if (obj) { canvas.setActiveObject(obj); canvas.renderAll(); }
+			}
+		});
+		list.appendChild(card);
+	});
 }
+
 // ═══════════════════════════════════════════════════════════════
 // SECTION 9 — UTILITIES (Zoom, Menus, Properties)
 // ═══════════════════════════════════════════════════════════════
@@ -1593,6 +1634,10 @@ async function changePageAndPreserveState(newPageNum) {
 			// Restore the PDF background after JSON load
 			canvas.backgroundImage = newPdfBackground;
 			canvas.renderAll();
+			//fix :if page chnage then update the sidebar with new page annotations
+
+			renderList();
+			renderBadges();
 		});
 	} else {
 		// If nothing was drawn on the new page, clear objects but KEEP the background
@@ -1601,6 +1646,8 @@ async function changePageAndPreserveState(newPageNum) {
 			if (obj.type !== 'image') canvas.remove(obj);
 		});
 		canvas.renderAll();
+		renderList();
+		renderBadges();
 	}
 }
 
@@ -1639,7 +1686,7 @@ function getAnnotationsJSON() {
 	let allPub = [];
 
 	for (const [pStr, data] of Object.entries(pageData)) {
-		// FIX: Filter comments for the current page to prevent duplicates and API crashes.
+		// Filter comments for the current page to prevent duplicates and API crashes
 		const pubs = data.annotations.filter(a => !a.isDraft && (a.page || 1) === parseInt(pStr));
 		pubs.forEach(a => {
 			const objData = data.canvasData.objects.find(o => o.id === a.id);
@@ -1673,29 +1720,16 @@ function getAnnotationsJSON() {
 	};
 }
 
-/*function updateJsonState() {
-	// Current page count
+function updateJsonState() {
+	// Prevent double counting by directly using main array length
 	let totalAnnots = annotations.filter(a => !a.isDraft).length;
 
-	// Add other pages count from pageData
-	for (const [pStr, data] of Object.entries(pageData)) {
-		if (parseInt(pStr) !== pageNum && data.annotations) {
-			totalAnnots += data.annotations.filter(a => !a.isDraft).length;
-		}
-	}
 	const jsCount = document.getElementById('st-json-count');
-	if (jsCount) jsCount.textContent = `{ } ${totalAnnots} annotation${totalAnnots !== 1 ? 's' : ''}`;
-}*/
-
-function updateJsonState() {
-    // 🚀 FIX: Ab koi double counting nahi hogi. Seedha main array ki length dikhayenge!
-    let totalAnnots = annotations.filter(a => !a.isDraft).length;
-    
-    const jsCount = document.getElementById('st-json-count');
-    if (jsCount) {
-        jsCount.textContent = `{ } ${totalAnnots} annotation${totalAnnots !== 1 ? 's' : ''}`;
-    }
+	if (jsCount) {
+		jsCount.textContent = `{ } ${totalAnnots} annotation${totalAnnots !== 1 ? 's' : ''}`;
+	}
 }
+
 // ═══════════════════════════════════════════════════════════════
 // SECTION 11 — PDF EXPORT & SUMMARY GENERATION
 // ═══════════════════════════════════════════════════════════════
@@ -1726,7 +1760,7 @@ async function handleSummary() {
 
 	let allPub = [];
 	for (const [pStr, data] of Object.entries(pageData)) {
-		// FIX: Prevent comments from all pages from getting mixed in the summary PDF.
+		// Prevent comments from all pages from getting mixed in the summary PDF
 		const pagePub = data.annotations.filter(a => !a.isDraft && (a.page || 1) === parseInt(pStr)).map(a => ({ ...a, page: parseInt(pStr) }));
 		allPub.push(...pagePub);
 	}
