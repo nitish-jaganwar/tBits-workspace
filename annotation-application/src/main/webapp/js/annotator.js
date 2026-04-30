@@ -1276,7 +1276,7 @@ function renderList() {
                 <div style="display: flex; align-items: center; gap: 6px;">
                     <div class="cc-badge" style="background:${a.color}; width: 22px; height: 22px; border-radius: 50%; color: white; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold;">${a.number}</div>
                     <span style="font-size: 10px; font-weight: 700; color: #475569; text-transform: uppercase;">${a.type}</span>
-                    <span style="font-size: 10px; font-weight: 700; color: #3b6ef8; background: #eff6ff; padding: 2px 6px; border-radius: 4px;">Pg ${a.page || 1}</span>
+                    <span style="font-size: 10px; font-weight: 700; color: #3b6ef8; background: #eff6ff; padding: 2px 6px; border-radius: 4px;">Page ${a.page || 1}</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px;">
                     ${originTag}
