@@ -4,41 +4,55 @@
 
 // Automatically extract server address from the current URL
 const urlParams = new URLSearchParams(window.location.search);
-const serverHost = window.location.host; // e.g., localhost:8080 or ntpc.co.in
-const contextPath = "/annotation-application"; // Your Java project context path
-let currentDocumentId = urlParams.get('filekey') || urlParams.get('docId') || 'DOC-test-123';
-
-// Dynamic HTTP API Path
+const serverHost = window.location.host; 
+const contextPath = "/annotation-application"; 
 const API_BASE_URL = `${window.location.protocol}//${serverHost}${contextPath}`;
-
 // Dynamic WebSocket Path (ws for http, wss for https)
 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-let WS_BASE_URL = `${wsProtocol}//${serverHost}${contextPath}/ws-annotator/${currentDocumentId}`;
 
-// Set PDF.js worker path (Use worker version 3.11.174 to match your library)
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-// 1. UNIQUE ID: Use 'filekey' as Document ID (fallback to 'docId')
-// Defined above as currentDocumentId
 
-// 2. DISPLAY NAME: Extract 'fileDisplayName' and replace '+' with spaces
-let rawDisplayName = urlParams.get('fileDisplayName');
-let displayFileName = rawDisplayName ? rawDisplayName.replace(/\+/g, ' ') : `${currentDocumentId}.pdf`;
+// 1. EXTRACT OIDC TOKEN FROM URL (Passed by Parent App)
+const authToken = urlParams.get('token') || '';
 
-// 3. FULL FILE URL: Safely extract the full URL after 'fileUrl='
+// 2. EXTRACT FULL NTPC FILE URL
 let externalFileUrl = null;
 const rawSearch = window.location.search;
 if (rawSearch.includes('fileUrl=')) {
-	externalFileUrl = rawSearch.substring(rawSearch.indexOf('fileUrl=') + 8);
+    externalFileUrl = decodeURIComponent(rawSearch.substring(rawSearch.indexOf('fileUrl=') + 8));
 }
 
-// 4. TOP UI UPDATE: Display the file name in the header on load
+// 3. EXTRACT FILE DETAILS FROM THE NTPC URL
+let currentDocumentId = 'doc-error';
+let displayFileName = 'Document';
+
+if (externalFileUrl) {
+    try {
+        const ntpcUrl = new URL(externalFileUrl);
+        // Extract 'filekey' exactly as provided in the NTPC string
+        currentDocumentId = ntpcUrl.searchParams.get('filekey') || 'doc-unknown';
+        
+        let rawName = ntpcUrl.searchParams.get('fileDisplayName');
+        if (rawName) {
+            displayFileName = rawName.replace(/\+/g, ' ');
+        }
+    } catch(e) {
+        console.error("Error parsing Parent App URL", e);
+    }
+}
+
+// 4. SET WEBSOCKET PATH WITH SECURE TOKEN
+let WS_BASE_URL = `${wsProtocol}//${serverHost}${contextPath}/ws-annotator/${currentDocumentId}`;
+
+// Set PDF.js worker path
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// Setup Display Name on load
 document.addEventListener("DOMContentLoaded", () => {
 	const fileNameDisplay = document.getElementById('file-name-display');
-	if (fileNameDisplay) {
-		fileNameDisplay.textContent = displayFileName;
-	}
+	if (fileNameDisplay) fileNameDisplay.textContent = displayFileName;
 });
+
 
 // ── CONSTANTS ──
 const PALETTE = ['#ffffff', '#f04f5a', '#f97316', '#eab308', '#18b87d', '#0ea5e9', '#3b6ef8', '#8b5cf6', '#ec4899', '#1a2140', '#8b96b8'];
@@ -137,7 +151,7 @@ window.addEventListener('DOMContentLoaded', () => {
 	setupSliders();
 	setupZoom();
 	setupKeyboard();
-	setupDragDrop();
+/*	setupDragDrop();*/
 	setupButtons();
 
 	renderList();
@@ -680,19 +694,19 @@ function resetState() {
 	isFileLoaded = false;
 }
 
-document.getElementById('file-upload').addEventListener('change', function(e) {
+/*document.getElementById('file-upload').addEventListener('change', function(e) {
 	if (e.target.files[0]) processFile(e.target.files[0]);
 	this.value = '';
-});
+});*/
 
-function setupDragDrop() {
+/*function setupDragDrop() {
 	const cw = document.getElementById('canvas-wrapper');
 	cw.addEventListener('dragover', e => e.preventDefault());
 	cw.addEventListener('drop', e => {
 		e.preventDefault();
 		if (e.dataTransfer.files[0]) processFile(e.dataTransfer.files[0]);
 	});
-}
+}*/
 
 function processFile(file) {
 	resetState();
