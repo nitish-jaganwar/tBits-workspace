@@ -4,8 +4,8 @@
 
 // Automatically extract server address from the current URL
 const urlParams = new URLSearchParams(window.location.search);
-const serverHost = window.location.host; 
-const contextPath = "/annotation-application"; 
+const serverHost = window.location.host;
+const contextPath = "/annotation-application";
 const API_BASE_URL = `${window.location.protocol}//${serverHost}${contextPath}`;
 // Dynamic WebSocket Path (ws for http, wss for https)
 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -19,7 +19,7 @@ const authToken = urlParams.get('token') || '';
 let externalFileUrl = null;
 const rawSearch = window.location.search;
 if (rawSearch.includes('fileUrl=')) {
-    externalFileUrl = decodeURIComponent(rawSearch.substring(rawSearch.indexOf('fileUrl=') + 8));
+	externalFileUrl = decodeURIComponent(rawSearch.substring(rawSearch.indexOf('fileUrl=') + 8));
 }
 
 // 3. EXTRACT FILE DETAILS FROM THE NTPC URL
@@ -27,18 +27,18 @@ let currentDocumentId = 'doc-error';
 let displayFileName = 'Document';
 
 if (externalFileUrl) {
-    try {
-        const ntpcUrl = new URL(externalFileUrl);
-        // Extract 'filekey' exactly as provided in the NTPC string
-        currentDocumentId = ntpcUrl.searchParams.get('filekey') || 'doc-unknown';
-        
-        let rawName = ntpcUrl.searchParams.get('fileDisplayName');
-        if (rawName) {
-            displayFileName = rawName.replace(/\+/g, ' ');
-        }
-    } catch(e) {
-        console.error("Error parsing Parent App URL", e);
-    }
+	try {
+		const ntpcUrl = new URL(externalFileUrl);
+		// Extract 'filekey' exactly as provided in the NTPC string
+		currentDocumentId = ntpcUrl.searchParams.get('filekey') || 'doc-unknown';
+
+		let rawName = ntpcUrl.searchParams.get('fileDisplayName');
+		if (rawName) {
+			displayFileName = rawName.replace(/\+/g, ' ');
+		}
+	} catch (e) {
+		console.error("Error parsing Parent App URL", e);
+	}
 }
 
 // 4. SET WEBSOCKET PATH WITH SECURE TOKEN
@@ -56,7 +56,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // ── CONSTANTS ──
 const PALETTE = ['#ffffff', '#f04f5a', '#f97316', '#eab308', '#18b87d', '#0ea5e9', '#3b6ef8', '#8b5cf6', '#ec4899', '#1a2140', '#8b96b8'];
-const TYPE_LABELS = { rect: 'Rectangle', circle: 'Ellipse', draw: 'Pencil', arrow: 'Arrow', line: 'Line', text: 'Text' };
+const TYPE_LABELS = { rect: 'Rectangle', circle: 'Ellipse', draw: 'Pencil', arrow: 'Arrow', line: 'Line', text: 'Text', cloud: 'Cloud', callout: 'Text Callout', stamp: 'Stamp' };
 
 // ── SECURITY HELPER ──
 function escapeHTML(str) {
@@ -106,7 +106,10 @@ let isFileLoaded = false;
 let autoSaveTimer = null; // Used for smart debounced saving
 let pingInterval = null;
 let wsReconnectAttempts = 0; // Track reconnect attempts for exponential backoff
-
+// ── Afor cloud ─────────────────
+let cloudPoints = [];       // stores click points for cloud tool
+let cloudPreviewLines = []; // live preview lines while drawing cloud
+let cloudLiveSegment = null; // the dotted line following the cursor
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 1 — BOOTSTRAP & INITIALIZATION
@@ -151,7 +154,7 @@ window.addEventListener('DOMContentLoaded', () => {
 	setupSliders();
 	setupZoom();
 	setupKeyboard();
-/*	setupDragDrop();*/
+	/*	setupDragDrop();*/
 	setupButtons();
 
 	renderList();
@@ -879,6 +882,21 @@ function setupTools() {
 
 function activateTool(tool) {
 	currentTool = tool;
+
+	// If switching away from cloud mid-draw, finalize what we have
+	if (currentTool === 'cloud' && tool !== 'cloud' && cloudPoints.length >= 3) {
+		finalizeCloud();
+	} else if (currentTool === 'cloud' && tool !== 'cloud') {
+		clearCloudPreview();
+		cloudPoints = [];
+	}
+
+	if (tool === 'stamp') {
+		openStampPalette();
+		return;
+	}
+
+
 	document.querySelectorAll('.tool-btn[data-tool]')
 		.forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
 	canvas.isDrawingMode = (tool === 'draw');
@@ -896,6 +914,23 @@ function setupDrawing() {
 	canvas.on('mouse:move', o => {
 		const p = canvas.getPointer(o.e);
 		document.getElementById('st-pos').textContent = `x:${Math.round(p.x)} y:${Math.round(p.y)}`;
+
+		// Cloud: show live dashed preview line from last point to cursor
+		if (currentTool === 'cloud' && cloudPoints.length > 0) {
+			if (cloudLiveSegment) canvas.remove(cloudLiveSegment);
+			const last = cloudPoints[cloudPoints.length - 1];
+			cloudLiveSegment = new fabric.Line(
+				[last.x, last.y, p.x, p.y],
+				{
+					stroke: currentColor, strokeWidth: 1.5, strokeDashArray: [6, 4],
+					selectable: false, evented: false, opacity: 0.7
+				}
+			);
+			canvas.add(cloudLiveSegment);
+			canvas.renderAll();
+			return;
+		}
+
 		if (!isDown) return;
 		if (currentTool === 'rect') {
 			if (origX > p.x) tempShape.set({ left: p.x });
@@ -917,9 +952,52 @@ function setupDrawing() {
 
 	canvas.on('mouse:down', o => {
 		if (currentTool === 'select') return;
-		if (!o.target) hideCommentInput();
+
 		if (o.e.button === 2) return;
+
+
+
+		// ── CLOUD: add a new point on each click ──────────────
+		if (currentTool === 'cloud') {
+			if (!o.target) hideCommentInput();
+			const p = canvas.getPointer(o.e);
+
+			// Double-click = close shape
+			if (o.e.detail === 2 && cloudPoints.length >= 2) {
+				finalizeCloud();
+				return;
+			}
+
+			// Draw permanent bump segment from last point to new point
+			if (cloudPoints.length > 0) {
+				const last = cloudPoints[cloudPoints.length - 1];
+				const segD = `M ${last.x} ${last.y}` +
+					cloudBumpSegment(last.x, last.y, p.x, p.y);
+				const seg = new fabric.Path(segD, {
+					stroke: currentColor, strokeWidth: strokeWidth,
+					fill: 'transparent', selectable: false, evented: false
+				});
+				canvas.add(seg);
+				cloudPreviewLines.push(seg);
+			}
+
+			cloudPoints.push({ x: p.x, y: p.y });
+
+			// Show a small dot at each click point
+			const dot = new fabric.Circle({
+				left: p.x - 3, top: p.y - 3, radius: 3,
+				fill: currentColor, selectable: false, evented: false, opacity: 0.5
+			});
+			canvas.add(dot);
+			cloudPreviewLines.push(dot);
+
+			canvas.renderAll();
+			return; // Don't fall through to isDown logic
+		}
+		// -------------------//---------------------
+		if (!o.target) hideCommentInput();
 		isDown = true;
+
 		const p = canvas.getPointer(o.e);
 		origX = p.x; origY = p.y;
 		const cfg = {
@@ -955,7 +1033,7 @@ function setupDrawing() {
 	});
 
 	canvas.on('mouse:up', () => {
-		if (['select', 'draw', 'text'].includes(currentTool)) return;
+		if (['select', 'draw', 'text','cloud'].includes(currentTool)) return;
 		isDown = false;
 		let shape = tempShape;
 		if (currentTool === 'arrow') {
@@ -1497,7 +1575,7 @@ function applyZoom() {
 }
 
 function setupKeyboard() {
-	const KEYS = { v: 'select', p: 'draw', r: 'rect', e: 'circle', a: 'arrow', t: 'text', l: 'line' };
+	const KEYS = { v: 'select', p: 'draw', r: 'rect', e: 'circle', a: 'arrow', t: 'text', l: 'line', c: 'cloud', o: 'callout' };
 	document.addEventListener('keydown', e => {
 		if (['TEXTAREA', 'INPUT'].includes(e.target.tagName)) return;
 		if (KEYS[e.key.toLowerCase()]) { activateTool(KEYS[e.key.toLowerCase()]); return; }
@@ -2045,4 +2123,83 @@ async function drawSummaryPage(pdfDoc2, pub, fontR, fontB) {
 		}
 		sy -= 10;
 	}
+}
+// ═══════════════════════════════════════════════════════════════
+// FIX 1 — ADOBE-STYLE CLOUD (Click points, Escape/Double-click to close)
+// ═══════════════════════════════════════════════════════════════
+
+// Draws a "bump arc" SVG path segment between two points
+function cloudBumpSegment(x1, y1, x2, y2) {
+	const dx = x2 - x1, dy = y2 - y1;
+	const dist = Math.sqrt(dx * dx + dy * dy);
+	if (dist < 1) return '';
+	const bumps = Math.max(1, Math.round(dist / 28));
+	const stepX = dx / bumps, stepY = dy / bumps;
+	// Perpendicular offset for the bump arc
+	const nx = -dy / dist, ny = dx / dist;
+	const bumpH = Math.min(14, dist / bumps * 0.55);
+
+	let path = '';
+	for (let i = 0; i < bumps; i++) {
+		const ax = x1 + stepX * i;
+		const ay = y1 + stepY * i;
+		const bx = x1 + stepX * (i + 1);
+		const by = y1 + stepY * (i + 1);
+		const mx = (ax + bx) / 2 + nx * bumpH;
+		const my = (ay + by) / 2 + ny * bumpH;
+		path += ` Q ${mx} ${my} ${bx} ${by}`;
+	}
+	return path;
+}
+
+// Builds the complete cloud SVG path from an array of {x,y} points
+function buildCloudPathFromPoints(pts) {
+	if (pts.length < 2) return null;
+	const closed = pts.length > 2;
+	let d = `M ${pts[0].x} ${pts[0].y}`;
+	for (let i = 0; i < pts.length - 1; i++) {
+		d += cloudBumpSegment(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+	}
+	if (closed) {
+		d += cloudBumpSegment(pts[pts.length - 1].x, pts[pts.length - 1].y, pts[0].x, pts[0].y);
+		d += ' Z';
+	}
+	return d;
+}
+
+// Cleans up cloud drawing preview lines from canvas
+function clearCloudPreview() {
+	cloudPreviewLines.forEach(l => canvas.remove(l));
+	cloudPreviewLines = [];
+	if (cloudLiveSegment) { canvas.remove(cloudLiveSegment); cloudLiveSegment = null; }
+}
+
+// Call this to FINALIZE the cloud when user double-clicks or presses Escape
+function finalizeCloud() {
+	if (cloudPoints.length < 3) {
+		clearCloudPreview();
+		cloudPoints = [];
+		return;
+	}
+	clearCloudPreview();
+
+	const pathD = buildCloudPathFromPoints(cloudPoints);
+	if (!pathD) return;
+
+	const cloudObj = new fabric.Path(pathD, {
+		stroke: currentColor,
+		strokeWidth: strokeWidth,
+		fill: 'transparent',
+		transparentCorners: false,
+		cornerColor: '#3b6ef8',
+		cornerSize: 8,
+		borderColor: '#3b6ef8',
+		objectCaching: false
+	});
+
+	canvas.add(cloudObj);
+	canvas.renderAll();
+	cloudPoints = [];
+	finalizeAnno(cloudObj, 'cloud');
+	activateTool('select');
 }
