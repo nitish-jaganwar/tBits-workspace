@@ -110,6 +110,12 @@ let wsReconnectAttempts = 0; // Track reconnect attempts for exponential backoff
 let cloudPoints = [];       // stores click points for cloud tool
 let cloudPreviewLines = []; // live preview lines while drawing cloud
 let cloudLiveSegment = null; // the dotted line following the cursor
+let stampProperties = {
+	author: '',
+	subject: '',
+	showDate: true,
+	angle: -12
+};
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 1 — BOOTSTRAP & INITIALIZATION
@@ -142,6 +148,71 @@ window.addEventListener('DOMContentLoaded', () => {
 	canvas = new fabric.Canvas('doc-canvas', { selection: true });
 	canvas.setWidth(800);
 	canvas.setHeight(600);
+
+	// ── 1. DYNAMIC MOVEMENT & ROTATION HOOK ──
+	canvas.on('object:moving', (e) => {
+		const obj = e.target;
+		if (obj && obj._calloutId) {
+			updateCalloutCoordinates(obj._calloutId);
+		}
+	});
+
+	canvas.on('object:scaling', (e) => {
+		const obj = e.target;
+		if (obj && obj._calloutId) {
+			updateCalloutCoordinates(obj._calloutId);
+		}
+	});
+
+	// ── 2. LIVE TYPING AUTO-RESIZE HOOK ──
+	canvas.on('text:changed', (e) => {
+		const obj = e.target;
+		if (obj && obj._calloutId && obj._calloutRole === 'box') {
+			updateCalloutCoordinates(obj._calloutId);
+
+			// Sidebar array state ko turant sync karein
+			const anno = annotations.find(a => a.id === obj._calloutId);
+			if (anno) {
+				anno.text = obj.text;
+				renderList();
+				updateJsonState();
+			}
+		}
+	});
+
+	canvas.on('text:editing:exited', (e) => {
+		const obj = e.target;
+		if (obj && obj._calloutId && obj._calloutRole === 'box') {
+			const anno = annotations.find(a => a.id === obj._calloutId);
+			if (anno) {
+				triggerAutoSave();
+				broadcastAnnotationChange('UPDATE', anno);
+			}
+		}
+	});
+
+	// ── 3. BULLETPROOF DELETION HOOK (No Orphans Left Behind) ──
+	canvas.on('object:removed', (e) => {
+		const obj = e.target;
+		if (obj && obj._calloutId && !obj._isRemovingCounterpart) {
+			obj._isRemovingCounterpart = true;
+
+			// Canvas par is callout ke bache hue saare parts ko dhund kar uda do
+			const counterparts = canvas.getObjects().filter(o => o._calloutId === obj._calloutId && o !== obj);
+			counterparts.forEach(c => {
+				c._isRemovingCounterpart = true;
+				canvas.remove(c);
+			});
+
+			// Main database array se bhi clear karein
+			annotations = annotations.filter(a => a.id !== obj._calloutId);
+
+			canvas.renderAll();
+			renderList();
+			renderBadges();
+			updateJsonState();
+		}
+	});
 
 	buildAllSwatches();
 	setupTools();
@@ -224,12 +295,10 @@ function connectWebSocket() {
 					}
 				} */
 				if (targetPage === pageNum) {
-					// 🚀 FIX 2: Sidebar aur UI ko turant update karo, Canvas drawing ka wait mat karo!
 					renderList();
 					renderBadges();
 					updateJsonState();
 
-					// Ab Canvas par aaram se shape draw hone do
 					if (incomingFabricJson) {
 						fabric.util.enlivenObjects([incomingFabricJson], function(objects) {
 							const newObj = objects[0];
@@ -237,6 +306,19 @@ function connectWebSocket() {
 							if (existingObj) canvas.remove(existingObj);
 
 							canvas.add(newObj);
+
+							// CRITICAL FIX: Enliven and draw the accompanying text string on peer canvases
+							if (receivedData.shapeData.pairedTextShape) {
+								fabric.util.enlivenObjects([receivedData.shapeData.pairedTextShape], function(txtObjects) {
+									const newTxt = txtObjects[0];
+									const existingTxt = canvas.getObjects().find(o => o.id === newTxt.id);
+									if (existingTxt) canvas.remove(existingTxt);
+
+									canvas.add(newTxt);
+									canvas.renderAll();
+								});
+							}
+
 							canvas.renderAll();
 							toast(`Update from ${receivedData.sender}`, '✨');
 						});
@@ -433,7 +515,7 @@ function connectWebSocket() {
 	};
 }*/
 
-function broadcastAnnotationChange(action, annoObj) {
+/*function broadcastAnnotationChange(action, annoObj) {
 	if (!nativeWs || nativeWs.readyState !== 1) return;
 
 	const fabricObj = canvas.getObjects().find(o => o.id === annoObj.id);
@@ -447,6 +529,37 @@ function broadcastAnnotationChange(action, annoObj) {
 		action: action,
 		sender: currentUser,
 		shapeData: { annotation: annoObj, fabricShape: fabricJson }
+	};
+	nativeWs.send(JSON.stringify(messagePayload));
+}*/
+function broadcastAnnotationChange(action, annoObj) {
+	if (!nativeWs || nativeWs.readyState !== 1) return;
+
+	const fabricObj = canvas.getObjects().find(o => o.id === annoObj.id);
+	let fabricJson = null;
+	let pairedTextJson = null;
+
+	if (fabricObj) {
+		fabricJson = fabricObj.toJSON(['id', 'transparentCorners', 'cornerColor', 'cornerSize', 'borderColor']);
+
+		// CRITICAL FIX: Include the companion text shape payload for callout paths
+		if (annoObj.fabricType === 'callout') {
+			const textObj = canvas.getObjects().find(o => o.id === annoObj.id + '-text');
+			if (textObj) {
+				pairedTextJson = textObj.toJSON(['id', 'transparentCorners', 'cornerColor', 'cornerSize', 'borderColor', 'text', 'fontSize', 'fill', 'fontFamily']);
+			}
+		}
+	}
+
+	const messagePayload = {
+		documentId: currentDocumentId,
+		action: action,
+		sender: currentUser,
+		shapeData: {
+			annotation: annoObj,
+			fabricShape: fabricJson,
+			pairedTextShape: pairedTextJson // Appended text metadata
+		}
 	};
 	nativeWs.send(JSON.stringify(messagePayload));
 }
@@ -910,7 +1023,7 @@ function activateTool(tool) {
 	hideCtx();
 }
 
-function setupDrawing() {
+/*function setupDrawing() {
 	canvas.on('mouse:move', o => {
 		const p = canvas.getPointer(o.e);
 		document.getElementById('st-pos').textContent = `x:${Math.round(p.x)} y:${Math.round(p.y)}`;
@@ -1072,8 +1185,187 @@ function setupDrawing() {
 			}
 		}
 	});
-}
+}*/
 
+function setupDrawing() {
+
+	canvas.on('mouse:move', o => {
+		const p = canvas.getPointer(o.e);
+		document.getElementById('st-pos').textContent = `x:${Math.round(p.x)} y:${Math.round(p.y)}`;
+
+		// Cloud: show live dashed preview line from last point to cursor
+		if (currentTool === 'cloud' && cloudPoints.length > 0) {
+			if (cloudLiveSegment) canvas.remove(cloudLiveSegment);
+			const last = cloudPoints[cloudPoints.length - 1];
+			cloudLiveSegment = new fabric.Line(
+				[last.x, last.y, p.x, p.y],
+				{
+					stroke: currentColor, strokeWidth: 1.5, strokeDashArray: [6, 4],
+					selectable: false, evented: false, opacity: 0.7
+				}
+			);
+			canvas.add(cloudLiveSegment);
+			canvas.renderAll();
+			return;
+		}
+
+		if (!isDown) return;
+
+		if (currentTool === 'rect') {
+			if (origX > p.x) tempShape.set({ left: p.x });
+			if (origY > p.y) tempShape.set({ top: p.y });
+			tempShape.set({ width: Math.abs(origX - p.x), height: Math.abs(origY - p.y) });
+		} else if (currentTool === 'circle') {
+			tempShape.set({
+				rx: Math.abs(origX - p.x) / 2, ry: Math.abs(origY - p.y) / 2,
+				left: origX > p.x ? p.x : origX, top: origY > p.y ? p.y : origY
+			});
+		} else if (currentTool === 'arrow') {
+			tempLine.set({ x2: p.x, y2: p.y });
+			tempHead.set({
+				left: p.x, top: p.y,
+				angle: Math.atan2(p.y - origY, p.x - origX) * 180 / Math.PI + 90
+			});
+		} else if (currentTool === 'line') {
+			tempShape.set({ x2: p.x, y2: p.y });
+		}
+		canvas.renderAll();
+	});
+
+	canvas.on('mouse:down', o => {
+		if (currentTool === 'select') return;
+		if (o.e.button === 2) return;
+
+		// ── CLOUD: add a new point on each click ──────────────
+		if (currentTool === 'cloud') {
+			if (!o.target) hideCommentInput();
+			const p = canvas.getPointer(o.e);
+
+			// Double-click = close shape
+			if (o.e.detail === 2 && cloudPoints.length >= 2) {
+				finalizeCloud();
+				return;
+			}
+
+			// Draw permanent bump segment from last point to new point
+			if (cloudPoints.length > 0) {
+				const last = cloudPoints[cloudPoints.length - 1];
+				const segD = `M ${last.x} ${last.y}` +
+					cloudBumpSegment(last.x, last.y, p.x, p.y);
+				const seg = new fabric.Path(segD, {
+					stroke: currentColor, strokeWidth: strokeWidth,
+					fill: 'transparent', selectable: false, evented: false
+				});
+				canvas.add(seg);
+				cloudPreviewLines.push(seg);
+			}
+
+			cloudPoints.push({ x: p.x, y: p.y });
+
+			// Show a small dot at each click point
+			const dot = new fabric.Circle({
+				left: p.x - 3, top: p.y - 3, radius: 3,
+				fill: currentColor, selectable: false, evented: false, opacity: 0.5
+			});
+			canvas.add(dot);
+			cloudPreviewLines.push(dot);
+
+			canvas.renderAll();
+			return; // Don't fall through to isDown logic
+		}
+
+		if (!o.target) hideCommentInput();
+		isDown = true;
+		const p = canvas.getPointer(o.e);
+		origX = p.x; origY = p.y;
+		const cfg = {
+			stroke: currentColor, strokeWidth, fill: 'transparent',
+			transparentCorners: false, cornerColor: '#3b6ef8', cornerSize: 8, borderColor: '#3b6ef8'
+		};
+
+		if (currentTool === 'rect') {
+			tempShape = new fabric.Rect({ left: origX, top: origY, width: 0, height: 0, ...cfg });
+			canvas.add(tempShape);
+		} else if (currentTool === 'circle') {
+			tempShape = new fabric.Ellipse({ left: origX, top: origY, rx: 0, ry: 0, ...cfg });
+			canvas.add(tempShape);
+		} else if (currentTool === 'arrow') {
+			tempLine = new fabric.Line([origX, origY, origX, origY], cfg);
+			tempHead = new fabric.Triangle({
+				width: 12, height: 14, fill: currentColor,
+				left: origX, top: origY, originX: 'center', originY: 'center', selectable: false
+			});
+			canvas.add(tempLine, tempHead);
+		} else if (currentTool === 'line') {
+			tempShape = new fabric.Line([origX, origY, origX, origY], cfg);
+			canvas.add(tempShape);
+		} else if (currentTool === 'text') {
+			const txt = new fabric.IText('Text', {
+				left: origX, top: origY, fontSize: 18,
+				fill: currentColor, fontFamily: 'Plus Jakarta Sans',
+				transparentCorners: false, cornerColor: '#3b6ef8', cornerSize: 8, borderColor: '#3b6ef8'
+			});
+			canvas.add(txt); txt.enterEditing(); txt.selectAll();
+			finalizeAnno(txt, 'text'); isDown = false;
+		} else if (currentTool === 'callout') {
+			const { shape } = createCallout(origX, origY, currentColor, strokeWidth);
+			finalizeAnnoCallout(shape);
+
+			isDown = false;
+		}
+	});
+
+	canvas.on('mouse:up', () => {
+		if (['select', 'draw', 'text', 'callout', 'cloud'].includes(currentTool)) return;
+		isDown = false;
+		let shape = tempShape;
+		if (currentTool === 'arrow') {
+			if (Math.abs(origX - tempLine.x2) < 5 && Math.abs(origY - tempLine.y2) < 5) {
+				canvas.remove(tempLine, tempHead); return;
+			}
+			canvas.remove(tempLine, tempHead);
+			shape = new fabric.Group([tempLine, tempHead], {
+				transparentCorners: false, cornerColor: '#3b6ef8', cornerSize: 8, borderColor: '#3b6ef8'
+			});
+			canvas.add(shape);
+		} else if (['rect', 'circle'].includes(currentTool)) {
+			if ((tempShape.width || 0) < 5 && (tempShape.height || 0) < 5) { canvas.remove(tempShape); return; }
+		} else if (currentTool === 'line') {
+			if (Math.abs(origX - tempShape.x2) < 5) { canvas.remove(tempShape); return; }
+		}
+		finalizeAnno(shape, currentTool);
+	});
+
+	canvas.on('path:created', e => {
+		e.path.set({ transparentCorners: false, cornerColor: '#3b6ef8', cornerSize: 8, borderColor: '#3b6ef8' });
+		finalizeAnno(e.path, 'draw');
+	});
+
+	canvas.on('after:render', () => renderBadges());
+
+	canvas.on('object:modified', (e) => {
+		triggerAutoSave();
+		if (e.target && e.target.id) {
+			const modifiedAnno = annotations.find(a => a.id === e.target.id);
+			if (modifiedAnno) broadcastAnnotationChange('UPDATE', modifiedAnno);
+		}
+	});
+
+	// Double-click on callout text = enter edit mode
+	canvas.on('mouse:dblclick', function(opt) {
+		const target = opt.target;
+		if (target && target._calloutText) {
+			// Group ko ungroup temporarily for text editing
+			const txt = target._calloutText;
+			target.exitEditing && target.exitEditing();
+
+			// IText ko directly enter editing mode
+			canvas.setActiveObject(txt);
+			txt.enterEditing();
+			canvas.renderAll();
+		}
+	});
+}
 function finalizeAnno(obj, type) {
 	activateTool('select');
 	const id = 'anno-' + Date.now();
@@ -1913,6 +2205,7 @@ function toUTF16BEHex(str) {
 
 // Builds the final PDF using pdf-lib (Draws shapes and native PDF comments)
 async function buildAnnotatedPdf(onProgress = () => { }) {
+
 	const lib = getPDFLib();
 	const { PDFDocument, PDFName, PDFHexString, PDFString, rgb, StandardFonts } = lib;
 
@@ -2202,4 +2495,682 @@ function finalizeCloud() {
 	cloudPoints = [];
 	finalizeAnno(cloudObj, 'cloud');
 	activateTool('select');
+}
+
+const STAMPS = [
+	{ label: 'APPROVED', bg: '#16a34a', textColor: '#fff', border: '#15803d' },
+	{ label: 'REJECTED', bg: '#dc2626', textColor: '#fff', border: '#b91c1c' },
+	{ label: 'REVIEWED', bg: '#2563eb', textColor: '#fff', border: '#1d4ed8' },
+	{ label: 'DRAFT', bg: '#f59e0b', textColor: '#fff', border: '#d97706' },
+	{ label: 'PENDING', bg: '#7c3aed', textColor: '#fff', border: '#6d28d9' },
+	{ label: 'VOID', bg: '#374151', textColor: '#fff', border: '#1f2937' },
+	{ label: 'CONFIDENTIAL', bg: '#be123c', textColor: '#fff', border: '#9f1239' },
+	{ label: 'FOR REVIEW', bg: '#0369a1', textColor: '#fff', border: '#075985' },
+	{ label: 'FINAL', bg: '#065f46', textColor: '#fff', border: '#064e3b' },
+	{ label: '✓ OK', bg: '#22c55e', textColor: '#14532d', border: '#16a34a' },
+];
+
+
+// ──────────────────────────────────────────────────────────────
+// HELPER — reads current modal form values into stampProperties
+// MUST be called before the overlay is removed
+// ──────────────────────────────────────────────────────────────
+function _syncStampPropsFromModal() {
+	const a = document.getElementById('sp-author');
+	const s = document.getElementById('sp-subject');
+	const d = document.getElementById('sp-show-date');
+	const g = document.getElementById('sp-angle');
+
+	if (a && a.value.trim()) stampProperties.author = a.value.trim();
+	if (s) stampProperties.subject = s.value.trim();
+	if (d) stampProperties.showDate = d.checked;
+	if (g) stampProperties.angle = parseInt(g.value) || -12;
+	if (!stampProperties.author) stampProperties.author = currentUser || 'Reviewer';
+}
+
+
+// ──────────────────────────────────────────────────────────────
+// OPEN STAMP PALETTE
+// ──────────────────────────────────────────────────────────────
+function openStampPalette() {
+	if (!isFileLoaded) { toast('Please open a document first!', '⚠️'); return; }
+
+	// toggle off if already open
+	const old = document.getElementById('stamp-overlay');
+	if (old) { old.remove(); return; }
+
+	const overlay = document.createElement('div');
+	overlay.id = 'stamp-overlay';
+	overlay.style.cssText = [
+		'position:fixed', 'inset:0', 'z-index:9998',
+		'display:flex', 'align-items:center', 'justify-content:center',
+		'background:rgba(10,15,35,0.45)', 'backdrop-filter:blur(3px)'
+	].join(';');
+
+	overlay.innerHTML = `
+<style>
+  .sp-tab{cursor:pointer;padding:7px 14px;font-size:12px;font-weight:700;
+    color:#64748b;border:none;background:none;border-radius:7px;transition:all .15s}
+  .sp-tab.active{background:#3b6ef8;color:#fff}
+  .sp-inp{width:100%;padding:8px 11px;border:1.5px solid #e2e8f0;border-radius:8px;
+    font-size:13px;font-family:'Plus Jakarta Sans',sans-serif;outline:none;
+    color:#1a2140;box-sizing:border-box;transition:border-color .2s}
+  .sp-inp:focus{border-color:#3b6ef8}
+  .sp-lbl{font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;
+    letter-spacing:.6px;margin-bottom:6px;display:block}
+  .sp-primary{background:#3b6ef8;color:#fff;border:none;border-radius:8px;
+    padding:9px 20px;font-size:13px;font-weight:700;cursor:pointer;
+    font-family:'Plus Jakarta Sans',sans-serif}
+  .sp-primary:hover{background:#2554e0}
+  .sp-ghost{background:#f1f5f9;color:#475569;border:none;border-radius:8px;
+    padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;
+    font-family:'Plus Jakarta Sans',sans-serif}
+  .stile{transition:transform .12s,box-shadow .12s;cursor:pointer}
+  .stile:hover{transform:scale(1.06) rotate(-1.5deg)!important;
+    box-shadow:0 10px 26px rgba(0,0,0,.28)!important}
+  .stile:active{transform:scale(.96)!important}
+</style>
+ 
+<div style="background:#fff;border-radius:18px;padding:24px;width:440px;
+  max-height:92vh;overflow-y:auto;
+  box-shadow:0 32px 80px rgba(0,0,0,.32),0 0 0 1px rgba(59,110,248,.10);
+  font-family:'Plus Jakarta Sans',sans-serif;">
+ 
+  <!-- header -->
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+    <div>
+      <div style="font-weight:800;font-size:17px;color:#1a2140">🔏 Stamps Palette</div>
+      <div style="font-size:11.5px;color:#64748b;margin-top:3px">Click a stamp to place it on the document</div>
+    </div>
+    <button id="sp-x" style="background:#f1f5f9;border:none;border-radius:9px;
+      width:32px;height:32px;cursor:pointer;font-size:15px;color:#475569">✕</button>
+  </div>
+ 
+  <!-- tabs -->
+  <div style="display:flex;gap:4px;margin-bottom:16px;background:#f8fafc;border-radius:9px;padding:4px">
+    <button class="sp-tab active" id="sp-tab-preset"  onclick="spTab('preset')">Preset Stamps</button>
+    <button class="sp-tab"        id="sp-tab-custom"  onclick="spTab('custom')">Custom Stamp</button>
+    <button class="sp-tab"        id="sp-tab-props"   onclick="spTab('props')">Properties</button>
+  </div>
+ 
+  <!-- PRESET panel -->
+  <div id="sp-panel-preset">
+    <div id="stamp-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:10px"></div>
+  </div>
+ 
+  <!-- CUSTOM panel -->
+  <div id="sp-panel-custom" style="display:none">
+    <div style="display:flex;flex-direction:column;gap:13px">
+      <div>
+        <label class="sp-lbl">Stamp Text</label>
+        <input id="cs-text" class="sp-inp" type="text" placeholder="e.g. FOR APPROVAL" maxlength="30">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <label class="sp-lbl">Background</label>
+          <input id="cs-bg" type="color" value="#3b6ef8"
+            style="width:100%;height:38px;border:1.5px solid #e2e8f0;border-radius:8px;padding:3px;cursor:pointer">
+        </div>
+        <div>
+          <label class="sp-lbl">Text Color</label>
+          <input id="cs-fg" type="color" value="#ffffff"
+            style="width:100%;height:38px;border:1.5px solid #e2e8f0;border-radius:8px;padding:3px;cursor:pointer">
+        </div>
+      </div>
+      <div>
+        <label class="sp-lbl">Angle</label>
+        <input id="cs-angle" type="range" min="-45" max="45" value="-12"
+          oninput="document.getElementById('cs-av').textContent=this.value+'°'"
+          style="width:100%">
+        <span style="font-size:12px;color:#64748b" id="cs-av">-12°</span>
+      </div>
+      <button class="sp-primary" id="cs-place-btn">Place Stamp</button>
+    </div>
+  </div>
+ 
+  <!-- PROPERTIES panel -->
+  <div id="sp-panel-props" style="display:none">
+    <div style="display:flex;flex-direction:column;gap:13px">
+      <div>
+        <label class="sp-lbl">Author / Reviewer Name</label>
+        <input id="sp-author" class="sp-inp" type="text" placeholder="e.g. Nitish Kumar">
+      </div>
+      <div>
+        <label class="sp-lbl">Subject</label>
+        <input id="sp-subject" class="sp-inp" type="text" placeholder="e.g. Approved for release">
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+        <input id="sp-show-date" type="checkbox" checked style="width:15px;height:15px;cursor:pointer">
+        Show "By [author] at [time]" on stamp face
+      </label>
+      <div>
+        <label class="sp-lbl">Default Angle</label>
+        <input id="sp-angle" type="range" min="-45" max="45" value="-12"
+          oninput="document.getElementById('sp-av').textContent=this.value+'°'"
+          style="width:100%">
+        <span style="font-size:12px;color:#64748b" id="sp-av">-12°</span>
+      </div>
+      <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;
+        padding:12px;font-size:11.5px;color:#166534;font-weight:600">
+        ℹ Settings apply to the next stamp placed.
+      </div>
+      <button class="sp-primary" id="sp-save-btn">Save &amp; Close</button>
+    </div>
+  </div>
+ 
+</div>`;
+
+	document.body.appendChild(overlay);
+
+	// ── pre-fill properties panel with stored values ──
+	const aEl = document.getElementById('sp-author');
+	const gEl = document.getElementById('sp-angle');
+	const dEl = document.getElementById('sp-show-date');
+	if (aEl) aEl.value = stampProperties.author || currentUser || '';
+	if (dEl) dEl.checked = stampProperties.showDate;
+	if (gEl) {
+		gEl.value = stampProperties.angle;
+		const av = document.getElementById('sp-av');
+		if (av) av.textContent = stampProperties.angle + '°';
+	}
+
+	// ── populate preset grid ──
+	const grid = document.getElementById('stamp-grid');
+	STAMPS.forEach(stamp => {
+		const btn = document.createElement('button');
+		btn.className = 'stile';
+		btn.style.cssText = [
+			`background:${stamp.bg}`, `color:${stamp.textColor}`,
+			`border:2.5px solid ${stamp.border}`, 'border-radius:10px',
+			'padding:12px 8px', 'font-weight:800', 'font-size:13px',
+			'letter-spacing:1.4px', 'font-family:Plus Jakarta Sans,sans-serif',
+			'text-transform:uppercase', 'width:100%',
+			'box-shadow:0 2px 8px rgba(0,0,0,.12)'
+		].join(';');
+		btn.textContent = stamp.label;
+
+		btn.addEventListener('click', () => {
+			// ── FIX: read form values BEFORE removing the overlay ──
+			_syncStampPropsFromModal();
+			overlay.remove();
+			_doPlaceStamp(stamp.bg, stamp.textColor, stamp.border, stamp.label);
+		});
+		grid.appendChild(btn);
+	});
+
+	// ── custom stamp place button ──
+	document.getElementById('cs-place-btn').addEventListener('click', () => {
+		const text = (document.getElementById('cs-text')?.value || '').trim().toUpperCase();
+		if (!text) { toast('Enter stamp text!', '⚠️'); return; }
+		const bg = document.getElementById('cs-bg')?.value || '#3b6ef8';
+		const fg = document.getElementById('cs-fg')?.value || '#ffffff';
+		const angle = parseInt(document.getElementById('cs-angle')?.value) || -12;
+
+		_syncStampPropsFromModal();
+		stampProperties.angle = angle;   // custom angle overrides
+		overlay.remove();
+		_doPlaceStamp(bg, fg, bg, text);
+	});
+
+	// ── save properties button ──
+	document.getElementById('sp-save-btn').addEventListener('click', () => {
+		_syncStampPropsFromModal();
+		overlay.remove();
+		toast('Stamp properties saved!', '✅');
+	});
+
+	// ── close button ──
+	document.getElementById('sp-x').addEventListener('click', () => overlay.remove());
+
+	// ── click outside to close ──
+	overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+}
+
+// Tab switcher (called via inline onclick)
+window.spTab = function(tab) {
+	['preset', 'custom', 'props'].forEach(t => {
+		const p = document.getElementById('sp-panel-' + t);
+		const b = document.getElementById('sp-tab-' + t);
+		if (p) p.style.display = t === tab ? 'block' : 'none';
+		if (b) b.classList.toggle('active', t === tab);
+	});
+};
+
+// ──────────────────────────────────────────────────────────────
+// BUILD + PLACE STAMP  (internal — always called after modal is gone)
+// ──────────────────────────────────────────────────────────────
+function _doPlaceStamp(bg, textColor, border, label) {
+	const hasDate = !!(stampProperties.showDate && stampProperties.author);
+	const sw = hasDate ? 240 : 190;
+	const sh = hasDate ? 64 : 46;
+
+	const rect = new fabric.Rect({
+		left: 0, top: 0,
+		width: sw, height: sh,
+		rx: 9, ry: 9,
+		fill: bg, stroke: border, strokeWidth: 3,
+		opacity: 0.94
+	});
+
+	const mainTxt = new fabric.Text(label, {
+		fontSize: hasDate ? 18 : 20,
+		fontWeight: '800',
+		fontFamily: 'Plus Jakarta Sans, Arial Black, Arial',
+		fill: textColor,
+		left: sw / 2,
+		top: hasDate ? 12 : sh / 2,
+		originX: 'center',
+		originY: 'top',
+		charSpacing: 120
+	});
+
+	const objs = [rect, mainTxt];
+
+	if (hasDate) {
+		const now = new Date();
+		const ds = now.toLocaleString('en-GB', {
+			hour: '2-digit', minute: '2-digit',
+			day: '2-digit', month: 'short', year: 'numeric'
+		});
+		objs.push(new fabric.Text(`By ${stampProperties.author} at ${ds}`, {
+			fontSize: 10,
+			fontFamily: 'Plus Jakarta Sans, Arial',
+			fill: textColor,
+			left: sw / 2,
+			top: 38,
+			originX: 'center',
+			originY: 'top',
+			opacity: 0.88
+		}));
+	}
+
+	const vpt = canvas.viewportTransform || [1, 0, 0, 1, 0, 0];
+	const cx = Math.max(20, (canvas.getWidth() / 2 - vpt[4]) / currentZoom - sw / 2);
+	const cy = Math.max(20, (canvas.getHeight() / 2 - vpt[5]) / currentZoom - sh / 2);
+
+	const group = new fabric.Group(objs, {
+		left: cx, top: cy,
+		angle: stampProperties.angle,
+		transparentCorners: false,
+		cornerColor: '#3b6ef8',
+		cornerSize: 8,
+		borderColor: '#3b6ef8'
+	});
+
+	// register annotation
+	const id = 'anno-' + Date.now();
+	group.id = id;
+	group._stampMeta = {
+		label,
+		author: stampProperties.author,
+		subject: stampProperties.subject || label,
+		color: bg,
+		placedAt: new Date().toISOString()
+	};
+
+	const now = new Date();
+	annotations.push({
+		id,
+		number: annoCounter++,
+		type: 'Stamp',
+		page: pageNum,
+		date: now.toISOString(),
+		text: `${label} — by ${stampProperties.author}`,
+		isDraft: false,
+		color: bg,
+		fabricType: 'stamp',
+		isImported: false,
+		stampProperties: {
+			author: stampProperties.author,
+			subject: stampProperties.subject || label,
+			showDate: stampProperties.showDate
+		},
+		createdBy: { id: currentUserId, name: stampProperties.author, email: currentUserEmail },
+		createdAt: now.toISOString(),
+		lastEditedBy: null, lastEditedAt: null, editHistory: [], replies: []
+	});
+
+	canvas.add(group);
+	canvas.setActiveObject(group);
+	canvas.renderAll();
+
+	activateTool('select');
+	renderBadges(); renderList(); updateJsonState();
+	triggerAutoSave();
+	broadcastAnnotationChange('ADD', annotations[annotations.length - 1]);
+	toast(`Stamp "${label}" placed`, '🔏');
+}
+
+//properties dialog for a placed stamp (right-click → Edit comment)
+function openStampPropertiesForSelected() {
+	const obj = canvas.getActiveObject();
+	if (!obj || !obj._stampMeta) { toast('Select a stamp first', '⚠️'); return; }
+
+	const meta = obj._stampMeta;
+	const old = document.getElementById('stamp-props-modal');
+	if (old) old.remove();
+
+	const modal = document.createElement('div');
+	modal.id = 'stamp-props-modal';
+	modal.style.cssText = [
+		'position:fixed', 'top:50%', 'left:50%', 'transform:translate(-50%,-50%)',
+		'background:#fff', 'border-radius:14px', 'padding:22px', 'width:390px',
+		'z-index:10000', 'box-shadow:0 20px 60px rgba(0,0,0,.30)',
+		"font-family:'Plus Jakarta Sans',sans-serif"
+	].join(';');
+
+	const modDate = new Date().toLocaleDateString('en-GB', {
+		day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
+	});
+
+	modal.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <div style="font-weight:800;font-size:15px;color:#1a2140">📋 Stamp Properties</div>
+        <button onclick="document.getElementById('stamp-props-modal').remove()"
+          style="background:#f1f5f9;border:none;border-radius:8px;width:28px;height:28px;
+                 cursor:pointer;font-size:14px">✕</button>
+      </div>
+ 
+      <div style="display:flex;gap:4px;margin-bottom:14px;background:#f8fafc;
+          border-radius:9px;padding:4px;font-size:12px;font-weight:700;color:#64748b">
+        <span style="background:#3b6ef8;color:#fff;padding:5px 14px;border-radius:7px">Appearance</span>
+        <span style="padding:5px 14px">General</span>
+        <span style="padding:5px 14px">Review History</span>
+      </div>
+ 
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div>
+          <label style="font-size:11px;font-weight:700;color:#475569;text-transform:uppercase;
+              letter-spacing:.5px;display:block;margin-bottom:5px">Author</label>
+          <input id="spm-author" type="text" value="${escapeHTML(meta.author || currentUser)}"
+            style="width:100%;padding:8px 10px;border:1.5px solid #e2e8f0;border-radius:8px;
+                   font-size:13px;font-family:'Plus Jakarta Sans',sans-serif;
+                   outline:none;box-sizing:border-box"
+            onfocus="this.style.borderColor='#3b6ef8'"
+            onblur="this.style.borderColor='#e2e8f0'">
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:700;color:#475569;text-transform:uppercase;
+              letter-spacing:.5px;display:block;margin-bottom:5px">Subject</label>
+          <input id="spm-subject" type="text" value="${escapeHTML(meta.subject || meta.label)}"
+            style="width:100%;padding:8px 10px;border:1.5px solid #e2e8f0;border-radius:8px;
+                   font-size:13px;font-family:'Plus Jakarta Sans',sans-serif;
+                   outline:none;box-sizing:border-box"
+            onfocus="this.style.borderColor='#3b6ef8'"
+            onblur="this.style.borderColor='#e2e8f0'">
+        </div>
+        <div style="background:#f8fafc;padding:10px 12px;border-radius:8px;
+            font-size:12px;color:#64748b">
+          <strong style="color:#1a2140">Modified:</strong> ${modDate}
+        </div>
+        <div style="display:flex;align-items:center;gap:16px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;
+              cursor:pointer;color:#374151">
+            <input type="checkbox" id="spm-locked"
+              style="width:14px;height:14px;cursor:pointer"> Locked
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;
+              cursor:pointer;color:#374151">
+            <input type="checkbox" id="spm-default"
+              style="width:14px;height:14px;cursor:pointer"> Make Properties Default
+          </label>
+        </div>
+      </div>
+ 
+      <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:20px">
+        <button onclick="document.getElementById('stamp-props-modal').remove()"
+          style="background:#f1f5f9;border:none;border-radius:8px;padding:8px 20px;
+                 font-size:13px;font-weight:600;cursor:pointer;color:#475569">Cancel</button>
+        <button onclick="applyStampProperties()"
+          style="background:#3b6ef8;border:none;border-radius:8px;padding:8px 20px;
+                 font-size:13px;font-weight:700;cursor:pointer;color:#fff">OK</button>
+      </div>`;
+
+	document.body.appendChild(modal);
+}
+
+window.applyStampProperties = function() {
+	const obj = canvas.getActiveObject();
+	if (!obj || !obj._stampMeta) return;
+
+	const author = document.getElementById('spm-author')?.value.trim() || currentUser;
+	const subject = document.getElementById('spm-subject')?.value.trim() || '';
+
+	obj._stampMeta.author = author;
+	obj._stampMeta.subject = subject;
+
+	const anno = annotations.find(a => a.id === obj.id);
+	if (anno) {
+		anno.stampProperties = { author, subject };
+		anno.createdBy = { ...anno.createdBy, name: author };
+		triggerAutoSave();
+		broadcastAnnotationChange('UPDATE', anno);
+		renderList();
+	}
+	document.getElementById('stamp-props-modal').remove();
+	toast('Stamp properties updated', '✅');
+};
+
+// Right-click → Edit: opens stamp props if stamp, otherwise opens comment input
+window.editActiveComment = function() {
+	const obj = canvas.getActiveObject();
+	if (obj && obj._stampMeta) {
+		openStampPropertiesForSelected();
+	} else if (obj && obj.id) {
+		showCommentInput(obj.id, false);
+	}
+};
+
+
+// ═══════════════════════════════════════════════════════════════
+// TEXT CALLOUT — FIXED
+// (removed stray 'f' character that broke the function definition)
+// ═══════════════════════════════════════════════════════════════
+
+function createCallout(x, y, color, strokeW) {
+	const calloutId = 'callout-' + Date.now();
+
+	// 1. TEXT BOX
+	const textBox = new fabric.Textbox('Double click to type…', {
+		left: x,
+		top: y,
+		width: 160,
+		fontSize: 10,
+		fontFamily: 'sans-serif',
+		fill: color,
+		backgroundColor: '#ffffff', // Ensures the document text behind it is hidden
+		padding: 8,
+		transparentCorners: false,
+		cornerColor: '#3b6ef8',
+		cornerSize: 7,
+		borderColor: '#3b6ef8',
+		borderScaleFactor: 1.5,
+		hasControls: true,
+		_calloutRole: 'box',
+		_calloutId: calloutId
+	});
+
+	// ✨ THE MAGIC TRICK: Custom override to draw a permanent border around the text box
+	const originalRenderBg = textBox._renderBackground;
+	textBox._renderBackground = function(ctx) {
+		// Draw the standard white background first
+		if (originalRenderBg) {
+			originalRenderBg.call(this, ctx);
+		}
+
+		// Draw our custom permanent border
+		ctx.beginPath();
+		ctx.strokeStyle = color;       // Border color matches the text/arrow
+		ctx.lineWidth = strokeW || 1.5;
+
+		// Calculate the exact size of the box including the padding
+		const w = this.width + (this.padding * 2);
+		const h = this.height + (this.padding * 2);
+		const boxX = -w / 2;
+		const boxY = -h / 2;
+
+		ctx.rect(boxX, boxY, w, h);
+		ctx.stroke();
+	};
+
+	// 2. INDEPENDENT DRAGGABLE ARROW POINTER
+	// Switched to a solid Polygon. It looks much sharper and hides the line connection.
+	const arrowTip = new fabric.Polygon([
+		{ x: -14, y: -6 },
+		{ x: 0, y: 0 },    // The exact tip of the arrow
+		{ x: -14, y: 6 }
+	], {
+		left: x - 50,
+		top: y + 60,
+		fill: color,       // Solid fill for a professional look
+		originX: 'right',  // Aligns the rotation and positioning strictly to the tip
+		originY: 'center',
+		hasControls: false,
+		hasBorders: false,
+		lockScalingX: true,
+		lockScalingY: true,
+		lockRotation: true,
+		_calloutRole: 'arrow',
+		_calloutId: calloutId
+	});
+
+	// 3. DYNAMIC LEADER LINE
+	const leaderLine = new fabric.Line([textBox.left, textBox.top, arrowTip.left, arrowTip.top], {
+		stroke: color,
+		strokeWidth: strokeW || 1.5,
+		selectable: false,
+		evented: false,
+		_calloutRole: 'line',
+		_calloutId: calloutId
+	});
+
+	// Layering: Add line first so it stays completely underneath the solid arrow
+	canvas.add(leaderLine);
+	canvas.add(arrowTip);
+	canvas.add(textBox);
+
+	updateCalloutCoordinates(calloutId);
+
+	canvas.setActiveObject(textBox);
+	return { shape: textBox, arrow: arrowTip, line: leaderLine };
+}
+// Registers the callout as an annotation
+function finalizeAnnoCallout(shapeObj) {
+	activateTool('select');
+	const id = shapeObj._calloutId; // Shared connected tracking ID
+	shapeObj.id = id;
+	const now = new Date();
+	const newAnno = {
+		id: id,
+		number: annoCounter++,
+		type: 'Text Callout',
+		page: pageNum,
+		date: now.toISOString(),
+		text: shapeObj.text || '',
+		isDraft: false,
+		color: currentColor,
+		fabricType: 'callout',
+		isImported: false,
+		createdBy: { id: currentUserId, name: currentUser, email: currentUserEmail },
+		createdAt: now.toISOString(),
+		lastEditedBy: null, lastEditedAt: null, editHistory: [], replies: []
+	};
+
+	annotations.push(newAnno);
+	canvas.setActiveObject(shapeObj);
+	renderBadges();
+	renderList();
+	updateJsonState();
+	triggerAutoSave();
+	broadcastAnnotationChange('ADD', newAnno);
+	showCommentInput(id, true);
+}
+
+window.deleteComment = function(id) {
+	const mainBox = canvas.getObjects().find(o => o._calloutId === id || o.id === id);
+	if (mainBox) {
+
+		canvas.remove(mainBox);
+	} else {
+
+		annotations = annotations.filter(a => a.id !== id);
+		canvas.renderAll();
+		renderList(); renderBadges(); updateJsonState();
+	}
+	toast('Deleted successfully', '🗑');
+	triggerAutoSave();
+};
+
+window.deleteActiveObject = function() {
+	const obj = canvas.getActiveObject();
+	if (!obj) return;
+
+	const annoToDelete = annotations.find(a => a.id === obj.id);
+	if (annoToDelete) {
+		broadcastAnnotationChange('DELETE', annoToDelete);
+		const pg = annoToDelete.page || 1;
+		if (pageCanvasStates[pg]?.objects)
+			pageCanvasStates[pg].objects =
+				pageCanvasStates[pg].objects.filter(o => o.id !== obj.id);
+		if (pageData[pg]?.annotations)
+			pageData[pg].annotations =
+				pageData[pg].annotations.filter(a => a.id !== obj.id);
+	}
+
+	canvas.remove(obj);
+	annotations = annotations.filter(a => a.id !== obj.id);
+	hideCtx(); hideCommentInput();
+	renderList(); renderBadges(); canvas.renderAll();
+	updateJsonState();
+	toast('Annotation deleted', '🗑');
+	triggerAutoSave();
+};
+function updateCalloutCoordinates(calloutId) {
+	const objects = canvas.getObjects();
+	const box = objects.find(o => o._calloutId === calloutId && o._calloutRole === 'box');
+	const arrow = objects.find(o => o._calloutId === calloutId && o._calloutRole === 'arrow');
+	const line = objects.find(o => o._calloutId === calloutId && o._calloutRole === 'line');
+
+	if (!box || !arrow || !line) return;
+
+	// 1. Get exact anchor points
+	// Because we set originX: 'right' on the arrow, its left/top is the EXACT tip
+	const arrowPt = { x: arrow.left, y: arrow.top };
+	const boxCenter = box.getCenterPoint();
+
+	// 2. Calculate text box boundary (Adding 16px buffer to respect your padding)
+	const boxW = box.getScaledWidth() + 16;
+	const boxH = box.getScaledHeight() + 16;
+
+	const dx = arrowPt.x - boxCenter.x;
+	const dy = arrowPt.y - boxCenter.y;
+
+	let edgeX = boxCenter.x;
+	let edgeY = boxCenter.y;
+
+	// 3. Bounding Box Intersection Math (Stops line at the edge of the text)
+	if (dx !== 0 || dy !== 0) {
+		const tX = Math.abs((boxW / 2) / dx);
+		const tY = Math.abs((boxH / 2) / dy);
+		const t = Math.min(tX, tY); // Finds the closest edge
+
+		edgeX = boxCenter.x + dx * t;
+		edgeY = boxCenter.y + dy * t;
+	}
+
+	// 4. Update Line Coordinates
+	line.set({
+		x1: edgeX,
+		y1: edgeY,
+		x2: arrowPt.x,
+		y2: arrowPt.y
+	});
+
+	// 5. Update Arrow Rotation
+	const angle = Math.atan2(boxCenter.y - arrowPt.y, boxCenter.x - arrowPt.x) * (180 / Math.PI);
+	arrow.set({ angle: angle + 180 });
+
+	line.setCoords();
+	arrow.setCoords();
+	canvas.renderAll();
 }
