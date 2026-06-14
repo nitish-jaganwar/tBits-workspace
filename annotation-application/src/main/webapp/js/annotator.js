@@ -56,7 +56,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // ── CONSTANTS ──
 const PALETTE = ['#ffffff', '#f04f5a', '#f97316', '#eab308', '#18b87d', '#0ea5e9', '#3b6ef8', '#8b5cf6', '#ec4899', '#1a2140', '#8b96b8'];
-const TYPE_LABELS = { rect: 'Rectangle', circle: 'Ellipse', draw: 'Pencil', arrow: 'Arrow', line: 'Line', text: 'Text', cloud: 'Cloud', callout: 'Text Callout', stamp: 'Stamp' };
+const TYPE_LABELS = { rect: 'Rectangle', circle: 'Ellipse', draw: 'Pencil', arrow: 'Arrow', line: 'Line', text: 'Text', cloud: 'Cloud', callout: 'Text Callout', stamp: 'Stamp', textcomment: 'Text Comment' };
 
 // ── SECURITY HELPER ──
 function escapeHTML(str) {
@@ -299,27 +299,19 @@ function connectWebSocket() {
 					renderBadges();
 					updateJsonState();
 
-					if (incomingFabricJson) {
+					if (incomingAnno.fabricType === 'callout' && receivedData.shapeData.calloutParts) {
+						// Callout: restore all 3 parts and relink them
+						_receiveCalloutParts(receivedData.shapeData.calloutParts, incomingAnno.id);
+						toast(`Update from ${receivedData.sender}`, '✨');
+					} else if (incomingFabricJson) {
+						// All other shapes: normal single-object restore
 						fabric.util.enlivenObjects([incomingFabricJson], function(objects) {
 							const newObj = objects[0];
 							const existingObj = canvas.getObjects().find(o => o.id === newObj.id);
 							if (existingObj) canvas.remove(existingObj);
-
 							canvas.add(newObj);
-
-							// CRITICAL FIX: Enliven and draw the accompanying text string on peer canvases
-							if (receivedData.shapeData.pairedTextShape) {
-								fabric.util.enlivenObjects([receivedData.shapeData.pairedTextShape], function(txtObjects) {
-									const newTxt = txtObjects[0];
-									const existingTxt = canvas.getObjects().find(o => o.id === newTxt.id);
-									if (existingTxt) canvas.remove(existingTxt);
-
-									canvas.add(newTxt);
-									canvas.renderAll();
-								});
-							}
-
 							canvas.renderAll();
+							renderBadges();
 							toast(`Update from ${receivedData.sender}`, '✨');
 						});
 					}
@@ -535,33 +527,53 @@ function connectWebSocket() {
 function broadcastAnnotationChange(action, annoObj) {
 	if (!nativeWs || nativeWs.readyState !== 1) return;
 
+	const PROPS = ['id', '_calloutId', '_calloutRole',
+		'transparentCorners', 'cornerColor', 'cornerSize', 'borderColor',
+		'text', 'fontSize', 'fill', 'fontFamily', 'backgroundColor', 'padding'];
+
 	const fabricObj = canvas.getObjects().find(o => o.id === annoObj.id);
 	let fabricJson = null;
-	let pairedTextJson = null;
+	let calloutParts = null;
 
 	if (fabricObj) {
-		fabricJson = fabricObj.toJSON(['id', 'transparentCorners', 'cornerColor', 'cornerSize', 'borderColor']);
+		fabricJson = fabricObj.toJSON(PROPS);
 
-		// CRITICAL FIX: Include the companion text shape payload for callout paths
+		// For callout: serialize ALL 3 parts so receiver can restore them linked
 		if (annoObj.fabricType === 'callout') {
-			const textObj = canvas.getObjects().find(o => o.id === annoObj.id + '-text');
-			if (textObj) {
-				pairedTextJson = textObj.toJSON(['id', 'transparentCorners', 'cornerColor', 'cornerSize', 'borderColor', 'text', 'fontSize', 'fill', 'fontFamily']);
+			const parts = canvas.getObjects().filter(o => o._calloutId === annoObj.id);
+			if (parts.length > 0) {
+				calloutParts = parts.map(p => p.toJSON(PROPS));
 			}
 		}
 	}
 
-	const messagePayload = {
+	nativeWs.send(JSON.stringify({
 		documentId: currentDocumentId,
 		action: action,
 		sender: currentUser,
 		shapeData: {
 			annotation: annoObj,
 			fabricShape: fabricJson,
-			pairedTextShape: pairedTextJson // Appended text metadata
+			calloutParts: calloutParts   // null for non-callout types
 		}
-	};
-	nativeWs.send(JSON.stringify(messagePayload));
+	}));
+}
+
+function _receiveCalloutParts(calloutParts, calloutId) {
+	// Remove any stale parts for this calloutId
+	canvas.getObjects()
+		.filter(o => o._calloutId === calloutId)
+		.forEach(o => {
+			o._isRemovingCounterpart = true;
+			canvas.remove(o);
+		});
+
+	fabric.util.enlivenObjects(calloutParts, function(objects) {
+		objects.forEach(obj => canvas.add(obj));
+		canvas.renderAll();
+		relinkAllCallouts();   // re-attach listeners + border on received parts
+		renderBadges();
+	});
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -588,7 +600,7 @@ async function handleSaveToServer() {
 
 	// MULTI-PAGE FIX STEP 1: Save current page state into memory
 	if (typeof pageCanvasStates !== 'undefined' && canvas) {
-		pageCanvasStates[pageNum] = canvas.toJSON(['id', 'transparentCorners', 'cornerColor', 'cornerSize', 'borderColor']);
+		pageCanvasStates[pageNum] = canvas.toJSON(['id', '_calloutId', '_calloutRole', 'transparentCorners', 'cornerColor', 'cornerSize', 'borderColor'])
 	}
 
 	// MULTI-PAGE FIX STEP 2: Retrieve page data from memory
@@ -614,7 +626,7 @@ async function handleSaveToServer() {
 		annotations: annotations, // Contains coordinates for every page
 		annoCounter: annoCounter,
 		// Send complete memory state to DB
-		canvasData: canvas.toJSON(['id', 'transparentCorners', 'cornerColor', 'cornerSize', 'borderColor']),
+		canvasData: canvas.toJSON(['id', '_calloutId', '_calloutRole', 'transparentCorners', 'cornerColor', 'cornerSize', 'borderColor']),
 		pageStates: typeof pageCanvasStates !== 'undefined' ? pageCanvasStates : {}
 	};
 
@@ -644,7 +656,56 @@ async function handleSaveToServer() {
 		toast('Network Error: Annotations not saved!', '❌', 5000);
 	}
 }
+function relinkAllCallouts() {
+	const objects = canvas.getObjects();
+	const ids = [...new Set(objects.filter(o => o._calloutId).map(o => o._calloutId))];
 
+	ids.forEach(calloutId => {
+		const box = objects.find(o => o._calloutId === calloutId && o._calloutRole === 'box');
+		const arrow = objects.find(o => o._calloutId === calloutId && o._calloutRole === 'arrow');
+		const line = objects.find(o => o._calloutId === calloutId && o._calloutRole === 'line');
+		if (!box || !arrow || !line) return;
+
+		const color = box.fill || '#3b6ef8';
+		const strokeW = line.strokeWidth || 1.5;
+
+		// Restore correct selectable/evented flags
+		box.set({ selectable: true, hasControls: true, evented: true });
+		arrow.set({
+			selectable: true, hasControls: false, hasBorders: false,
+			lockScalingX: true, lockScalingY: true, lockRotation: true, evented: true
+		});
+		line.set({ selectable: false, evented: false });
+
+		// Re-attach border override
+		const proto = box.constructor.prototype;
+		box._renderBackground = function(ctx) {
+			if (proto._renderBackground) proto._renderBackground.call(this, ctx);
+			ctx.beginPath();
+			ctx.strokeStyle = color;
+			ctx.lineWidth = strokeW;
+			const w = this.width + (this.padding || 0) * 2;
+			const h = this.height + (this.padding || 0) * 2;
+			ctx.rect(-w / 2, -h / 2, w, h);
+			ctx.stroke();
+		};
+
+		// Re-attach moving listeners (remove old first to avoid stacking)
+		box.off('moving'); box.off('scaling'); arrow.off('moving');
+		box.on('moving', () => updateCalloutCoordinates(calloutId));
+		box.on('scaling', () => updateCalloutCoordinates(calloutId));
+		arrow.on('moving', () => updateCalloutCoordinates(calloutId));
+
+		// Ensure annotation id is on the textBox
+		if (!box.id) box.id = calloutId;
+
+		// Sync line + arrow to current positions
+		updateCalloutCoordinates(calloutId);
+		console.log('🔗 Re-linked callout:', calloutId);
+	});
+
+	canvas.requestRenderAll();
+}
 async function loadFromServer() {
 	// Fetch from external URL if provided, otherwise from Java Backend
 	const FILE_URL = externalFileUrl ? externalFileUrl : `${API_BASE_URL}/api/annotations/file/${currentDocumentId}`;
@@ -711,6 +772,7 @@ async function loadFromServer() {
 						});
 
 						canvas.renderAll();
+						relinkAllCallouts();
 						renderBadges();
 						renderList();
 						updateJsonState();
@@ -1312,6 +1374,11 @@ function setupDrawing() {
 			finalizeAnnoCallout(shape);
 
 			isDown = false;
+		} else if (currentTool === 'textcomment') {
+			// Single click places a text comment sticky note
+			const { shape } = createTextComment(origX, origY, currentColor);
+			finalizeAnno(shape, 'textcomment');
+			isDown = false;
 		}
 	});
 
@@ -1771,7 +1838,26 @@ function updateToolbarState(hasSelection) {
 }
 
 function setupSelection() {
-	canvas.on('selection:created', e => { onSel(e.selected[0]); updateToolbarState(true); });
+	canvas.on('selection:created', e => {
+		onSel(e.selected[0]); updateToolbarState(true);
+		function onSel(obj) {
+			if (!obj) return;
+			showPropsPanel(obj);
+
+			if (obj.id) {
+				activeAnnoId = obj.id;
+
+				// Text comment: show popup immediately on single click
+				const anno = annotations.find(a => a.id === obj.id && a.fabricType === 'textcomment');
+				if (anno) {
+					showTextCommentPopup(obj, anno);
+				} else {
+					showCommentInput(obj.id, false);
+				}
+			}
+			renderBadges();
+		}
+	});
 	canvas.on('selection:updated', e => { onSel(e.selected[0]); updateToolbarState(true); });
 	canvas.on('selection:cleared', () => { hideCtx(); hideCommentInput(); showNoSel(); updateToolbarState(false); });
 }
@@ -1867,7 +1953,7 @@ function applyZoom() {
 }
 
 function setupKeyboard() {
-	const KEYS = { v: 'select', p: 'draw', r: 'rect', e: 'circle', a: 'arrow', t: 'text', l: 'line', c: 'cloud', o: 'callout' };
+	const KEYS = { v: 'select', p: 'draw', r: 'rect', e: 'circle', a: 'arrow', t: 'text', l: 'line', c: 'cloud', o: 'callout', n: 'textcomment' };
 	document.addEventListener('keydown', e => {
 		if (['TEXTAREA', 'INPUT'].includes(e.target.tagName)) return;
 		if (KEYS[e.key.toLowerCase()]) { activateTool(KEYS[e.key.toLowerCase()]); return; }
@@ -1994,7 +2080,7 @@ async function changePageAndPreserveState(newPageNum) {
 		canvas.backgroundImage = null;
 
 		// Save boxes/arrows/comments into memory
-		pageCanvasStates[pageNum] = canvas.toJSON(['id', 'transparentCorners', 'cornerColor', 'borderColor']);
+		pageCanvasStates[pageNum] = canvas.toJSON(['id', '_calloutId', '_calloutRole', 'transparentCorners', 'cornerColor', 'cornerSize', 'borderColor']);
 
 		// Restore the background
 		canvas.backgroundImage = tempBg;
@@ -2019,7 +2105,7 @@ async function changePageAndPreserveState(newPageNum) {
 			canvas.backgroundImage = newPdfBackground;
 			canvas.renderAll();
 			//fix :if page chnage then update the sidebar with new page annotations
-
+			relinkAllCallouts();
 			renderList();
 			renderBadges();
 		});
@@ -2061,7 +2147,7 @@ function syncCurrentPage() {
 	pageData[pageNum] = {
 		annotations: [...annotations],
 		annoCounter: annoCounter,
-		canvasData: canvas.toJSON(['id', 'transparentCorners', 'cornerColor', 'cornerSize', 'borderColor'])
+		canvasData: canvas.toJSON(['id', '_calloutId', '_calloutRole', 'transparentCorners', 'cornerColor', 'cornerSize', 'borderColor'])
 	};
 }
 
@@ -2417,6 +2503,9 @@ async function drawSummaryPage(pdfDoc2, pub, fontR, fontB) {
 		sy -= 10;
 	}
 }
+
+//-------------------- adding new features - Cloud,Stamp, Callout Text, Textcomment -----------------
+
 // ═══════════════════════════════════════════════════════════════
 // FIX 1 — ADOBE-STYLE CLOUD (Click points, Escape/Double-click to close)
 // ═══════════════════════════════════════════════════════════════
@@ -3173,4 +3262,196 @@ function updateCalloutCoordinates(calloutId) {
 	line.setCoords();
 	arrow.setCoords();
 	canvas.renderAll();
+}
+// ═══════════════════════════════════════════════════════════════
+// JS: createTextComment() function
+// ═══════════════════════════════════════════════════════════════
+
+function createTextComment(x, y, color) {
+	// Sticky note icon circle (like Adobe's blue circle with lines)
+	const iconCircle = new fabric.Circle({
+		radius: 14,
+		left: 0,
+		top: 0,
+		fill: color,
+		stroke: 'none',
+		originX: 'center',
+		originY: 'center'
+	});
+
+	// Two small white lines inside circle (document icon)
+	const line1 = new fabric.Rect({
+		left: -5, top: -4, width: 10, height: 2,
+		fill: 'rgba(255,255,255,0.9)', stroke: 'none', rx: 1
+	});
+	const line2 = new fabric.Rect({
+		left: -5, top: 1, width: 7, height: 2,
+		fill: 'rgba(255,255,255,0.9)', stroke: 'none', rx: 1
+	});
+	const line3 = new fabric.Rect({
+		left: -5, top: 6, width: 8, height: 2,
+		fill: 'rgba(255,255,255,0.9)', stroke: 'none', rx: 1
+	});
+
+	const group = new fabric.Group([iconCircle, line1, line2, line3], {
+		left: x,
+		top: y,
+		transparentCorners: false,
+		cornerColor: '#3b6ef8',
+		cornerSize: 7,
+		borderColor: '#3b6ef8',
+		hasControls: false,   // icon doesn't need resize handles
+		objectCaching: false
+	});
+
+	canvas.add(group);
+	canvas.setActiveObject(group);
+	canvas.renderAll();
+
+	return { shape: group };
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// P — JS: showTextCommentPopup()
+// The floating popup that appears on double-click (like Adobe)
+// ═══════════════════════════════════════════════════════════════
+
+function showTextCommentPopup(fabricObj, anno) {
+	// Remove any existing popup
+	const existing = document.getElementById('text-comment-popup');
+	if (existing) existing.remove();
+
+	// Get screen position of the annotation object
+	const canvasEl = document.getElementById('doc-canvas');
+	const canvasRect = canvasEl.getBoundingClientRect();
+	const objBounds = fabricObj.getBoundingRect(true);
+	const popupX = canvasRect.left + (objBounds.left + objBounds.width / 2) * currentZoom;
+	const popupY = canvasRect.top + (objBounds.top + objBounds.height) * currentZoom + 8;
+
+	// Format time like Adobe: "12:42 PM"
+	const timeStr = new Date(anno.createdAt || anno.date).toLocaleTimeString([], {
+		hour: '2-digit', minute: '2-digit'
+	});
+
+	const authorName = anno.createdBy ? anno.createdBy.name : (currentUser || 'Reviewer');
+
+	const popup = document.createElement('div');
+	popup.id = 'text-comment-popup';
+	popup.style.cssText = `
+        position: fixed;
+        left: ${Math.min(popupX, window.innerWidth - 320)}px;
+        top: ${Math.min(popupY, window.innerHeight - 200)}px;
+        width: 290px;
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        box-shadow: 0 8px 28px rgba(0,0,0,0.18);
+        z-index: 9000;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        overflow: hidden;
+    `;
+
+	popup.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    padding:10px 14px 8px;border-bottom:1px solid #f1f5f9;">
+            <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:12px;font-weight:700;color:#1a2140;">
+                    ${escapeHTML(authorName.toUpperCase())}
+                </span>
+                <span style="font-size:11px;color:#94a3b8;">${timeStr}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:4px;">
+                <button id="tcp-menu" style="background:none;border:none;cursor:pointer;
+                    color:#94a3b8;font-size:16px;padding:0 4px;line-height:1;">⋯</button>
+                <button id="tcp-close" style="background:none;border:none;cursor:pointer;
+                    color:#94a3b8;font-size:18px;padding:0 4px;line-height:1;">✕</button>
+            </div>
+        </div>
+        <div style="padding:10px 14px 4px;">
+            <textarea id="tcp-textarea"
+                placeholder="Add a comment…"
+                rows="3"
+                style="width:100%;resize:none;border:none;outline:none;
+                       font-size:13px;font-family:'Plus Jakarta Sans',sans-serif;
+                       color:#334155;line-height:1.5;box-sizing:border-box;
+                       background:transparent;"
+            >${escapeHTML(anno.text || '')}</textarea>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;padding:6px 14px 12px;">
+            <button id="tcp-cancel"
+                style="background:none;border:none;cursor:pointer;
+                       font-size:13px;font-weight:500;color:#64748b;
+                       font-family:'Plus Jakarta Sans',sans-serif;padding:5px 10px;">
+                Cancel
+            </button>
+            <button id="tcp-post"
+                style="background:#3b6ef8;color:#fff;border:none;
+                       border-radius:7px;padding:5px 16px;font-size:13px;
+                       font-weight:700;cursor:pointer;
+                       font-family:'Plus Jakarta Sans',sans-serif;">
+                Post
+            </button>
+        </div>
+    `;
+
+	document.body.appendChild(popup);
+
+	// Focus textarea
+	setTimeout(() => {
+		const ta = document.getElementById('tcp-textarea');
+		if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+	}, 50);
+
+	// Close button
+	document.getElementById('tcp-close').addEventListener('click', () => popup.remove());
+
+	// Cancel button
+	document.getElementById('tcp-cancel').addEventListener('click', () => popup.remove());
+
+	// Post button — saves comment to annotation
+	document.getElementById('tcp-post').addEventListener('click', () => {
+		const val = document.getElementById('tcp-textarea')?.value.trim() || '';
+		if (val) {
+			const now = new Date().toISOString();
+			if (anno.text && anno.text !== val) {
+				if (!anno.editHistory) anno.editHistory = [];
+				anno.editHistory.push({
+					by: anno.lastEditedBy ? anno.lastEditedBy.name : authorName,
+					at: anno.lastEditedAt || anno.createdAt || now,
+					text: anno.text
+				});
+				anno.lastEditedBy = { id: currentUserId, name: currentUser };
+				anno.lastEditedAt = now;
+			}
+			anno.text = val;
+			anno.isDraft = false;
+			anno.date = new Date().toLocaleString();
+
+			renderList();
+			updateJsonState();
+			triggerAutoSave();
+			broadcastAnnotationChange('UPDATE', anno);
+			toast('Comment saved', '💬');
+		}
+		popup.remove();
+	});
+
+	// Ctrl+Enter to post
+	document.getElementById('tcp-textarea').addEventListener('keydown', e => {
+		if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+			document.getElementById('tcp-post')?.click();
+		}
+		if (e.key === 'Escape') popup.remove();
+	});
+
+	// Click outside to close
+	setTimeout(() => {
+		document.addEventListener('click', function outsideClose(e) {
+			if (!popup.contains(e.target) && e.target !== fabricObj) {
+				popup.remove();
+				document.removeEventListener('click', outsideClose);
+			}
+		});
+	}, 100);
 }
