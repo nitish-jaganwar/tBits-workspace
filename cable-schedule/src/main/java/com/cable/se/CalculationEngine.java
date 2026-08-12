@@ -25,9 +25,13 @@ public class CalculationEngine {
 // Column T: Full Load Power Factor Calculation
 	public double calculateFullLoadPf(String loadType, double ratingKw) {
 		if ("MOTOR".equalsIgnoreCase(loadType.trim())) {
+			System.out.println("ratingKw :" + ratingKw);
 			java.util.Map.Entry<Double, ExcelDataCache.MotorDetails> entry = cache.motorDataCache.floorEntry(ratingKw);
-			if (entry != null)
+			System.out.println("entry :"+entry.getKey());
+			if (entry != null) {
+				 System.out.println(entry.getValue().flPf);
 				return entry.getValue().flPf;
+			}
 		}
 		return 0.80; // Default for PANEL/HEATER
 	}

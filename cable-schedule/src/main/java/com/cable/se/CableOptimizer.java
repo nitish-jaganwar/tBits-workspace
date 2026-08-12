@@ -16,9 +16,6 @@ public class CableOptimizer {
 	public OptimizationResult optimize(CableRecord record) {
 		OptimizationResult result = new OptimizationResult();
 
-		// System.out.println(" Running Master Optimizer Loop (Matching Excel VBA Bug
-		// Logic)...");
-
 		double minCost = Double.MAX_VALUE;
 		int bestRuns = -1;
 		double bestSize = -1;
@@ -28,7 +25,19 @@ public class CableOptimizer {
 		int minRun_Runs = 0;
 		double minRun_Size = 0;
 		boolean isFirstValidCase = true;
-
+		
+		// (kept as Double so we can tell "not applicable" apart from an actual 0)
+		Double bestTotalCurrentRating = null;
+		Double bestCableResistance = null;
+		Double bestCableReactance = null;
+		Double bestStartingVd = null;
+		Double bestTotalStartingVd = null;
+		Double bestRunningVd = null;
+		Double bestTotalRunningVd = null;
+		double bestDeratedCurrent = 0;
+		String bestCapacityStatus = null;
+		String bestVdStatus = null;
+		String bestFinalValidation = null;
 		StringBuilder matrixBuilder = new StringBuilder();
 		// Set<String> seenSizes = new LinkedHashSet<>();
 		double lastValidSize = -1.0;
@@ -112,7 +121,7 @@ public class CableOptimizer {
 									: String.valueOf(size);
 
 							matrixBuilder.append(runTest).append("R x ").append(coreStr).append("C x ").append(sizeStr)
-									.append(" Sqmm(Rs.").append((long) currentCost).append(")\n");
+									.append(" Sqmm(Rs.").append((long) currentCost).append(bestCond).append(")\n");
 
 							if (currentCost < minCost) {
 								minCost = currentCost;
@@ -121,6 +130,21 @@ public class CableOptimizer {
 								bestCores = testCores;
 								bestCond = cond;
 								bestLen = totalLength;
+								// NEW: capture the electrical parameters of the current best candidate
+								// (left as null if the engine didn't compute a value; formatted as "N/A" below)
+								bestTotalCurrentRating = totalCurrentRating;
+								bestCableResistance = cableResistance;
+								bestCableReactance = cableReactance;
+								bestStartingVd = startingVd;
+								bestTotalStartingVd = totalStartingVd;
+								bestRunningVd = runningVd;
+								bestTotalRunningVd = totalRunningVd;
+								bestDeratedCurrent = deratedCurrent;
+								bestCapacityStatus = capacityStatus;
+								bestVdStatus = vdStatus;
+								bestFinalValidation = finalValidation;
+								
+								
 							}
 							continue outerLoop;
 						}
@@ -150,7 +174,20 @@ public class CableOptimizer {
 			result.outLugs = bestRuns * coreCountForLugs * 2;
 			result.outGlands = bestRuns * 2;
 
+			// NEW: populate the additional electrical result fields for the best candidate
+			// (formatAsNA prints "N/A" instead of a misleading 0 when the value is null)
+			result.totalCurrentRating = formatAsNA(bestTotalCurrentRating);
+			result.cableResistance = formatAsNA(bestCableResistance);
+			result.cableReactance = formatAsNA(bestCableReactance);
+			result.startingVd = formatAsNA(bestStartingVd);
+			result.totalStartingVd = formatAsNA(bestTotalStartingVd);
+			result.runningVd = formatAsNA(bestRunningVd);
+			result.totalRunningVd = formatAsNA(bestTotalRunningVd);
+			result.deratedCurrent = bestDeratedCurrent;
 			// THE "FINAL SELECTION" LOGIC (BASED ON STATUS)
+			result.capacityStatus = (bestCapacityStatus != null) ? bestCapacityStatus : "N/A";
+			result.vdStatus = (bestVdStatus != null) ? bestVdStatus : "N/A";
+			result.finalValidation = (bestFinalValidation != null) ? bestFinalValidation : "N/A";
 
 			if ("Optimal".equalsIgnoreCase(result.status)) {
 				// if (bestRuns < 4) optimal ,so add to final selection, otherwise sub-optimal,
@@ -159,8 +196,29 @@ public class CableOptimizer {
 				result.finalSelectionSize = bestSize;
 			} else {
 				// if sub-optimal, then final selection should be blank
-				result.finalSelectionRuns = null;
-				result.finalSelectionSize = null;
+//				result.finalSelectionRuns = null;
+//				result.finalSelectionSize = null;
+				result.finalSelectionRuns = minRun_Runs;
+				result.finalSelectionSize = minRun_Size;
+				
+				result.bestLen = record.unitLength * minRun_Runs;
+			}
+			
+			
+			// JOINTS CALCULATION (FINAL SELECTION)
+			if (result.finalSelectionRuns != null && result.finalSelectionSize != null) {
+			    double finalSize = result.finalSelectionSize;
+			    int finalRuns = result.finalSelectionRuns;
+			    
+			    // Size <= 70.0 sqmm -> Limit 800m, Size > 70.0 sqmm -> Limit 500m
+			    double limit = (finalSize <= 70.0) ? 800.0 : 500.0;
+			    
+			    if (record.unitLength > limit) {
+			        int jointsPerRun = (int) Math.ceil(record.unitLength / limit) - 1;
+			        result.totalJoints = jointsPerRun * finalRuns;
+			    } else {
+			        result.totalJoints = 0;
+			    }
 			}
 
 		}
@@ -173,6 +231,13 @@ public class CableOptimizer {
 		return result;
 	}
 
+	/**
+	 * Formats a nullable Double for display: returns "N/A" when the value
+	 * wasn't computed (null), otherwise the numeric value as a string.
+	 */
+	private static String formatAsNA(Double value) {
+		return (value != null) ? String.valueOf(value) : "N/A";
+	}
 	public static class CableRecord {
 		public String tagNo;
 		public String layingMode;
@@ -214,6 +279,22 @@ public class CableOptimizer {
 		public String matrix = "";
 		public double bestCores = 0;
 		public String bestCond = "";
+
+		// NEW fields
+		// Stored as String so we can show "N/A" instead of a misleading 0
+		// for values the engine didn't compute (e.g. no starting current/PF).
+		public String cableResistance = "N/A";
+		public String totalRunningVd = "N/A";
+		public String totalStartingVd = "N/A";
+		public String totalCurrentRating = "N/A";
+		public String cableReactance = "N/A";
+		public String startingVd = "N/A";
+		public String runningVd = "N/A";
+		public double deratedCurrent = 0;
+		public String capacityStatus = "N/A";
+		public String vdStatus = "N/A";
+		public String finalValidation = "N/A";
+		public int totalJoints = 0;
 
 	}
 }
