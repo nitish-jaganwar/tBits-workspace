@@ -10,6 +10,7 @@ public class DrumRecord {
     
     public double drumBalancedLength;       // drumBalancedLength :Remaining buffer length = drumActualLength - exactOrderedLength
     public String manufacturerDrumNo = ""; // Vendor Drum Tag Number
+    public double manufacturerActualDrumLength;
     
     @Override
     public String toString() {
@@ -22,6 +23,7 @@ public class DrumRecord {
                 ", maxDrumLimit=" + maxDrumLimit +
                 ", drumBalancedLength=" + drumBalancedLength +
                 ", manufacturerDrumNo=" + manufacturerDrumNo +
+                 ", manufacturerActualDrumLength=" + manufacturerActualDrumLength +
                 '}';
     }
 }

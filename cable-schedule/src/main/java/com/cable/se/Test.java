@@ -33,10 +33,10 @@ public class Test {
 		String inputFilePath = "C:\\Users\\NITISH JAGANWAR\\Desktop\\test\\SE\\temp\\cable_schedule.xlsm";
 		String outputFilePath = "C:\\Users\\NITISH JAGANWAR\\Desktop\\10_rows_22-06-20265555.xlsx";
 
-		String sheetName = "Cable Schedule";
+		String sheetName = "SARALA NAGAR";
 
-		int startRowIndex = 7; // Excel Row 60 (0-based index)
-		int numberOfRecordsToProcess = 10;
+		int startRowIndex = 12; // Excel Row 60 (0-based index)
+		int numberOfRecordsToProcess = 13;
 
 		processBulkExcelData(inputFilePath, outputFilePath, sheetName, startRowIndex, numberOfRecordsToProcess);
 	}
@@ -53,8 +53,7 @@ public class Test {
 		List<ExportRecord> masterOptResults = new ArrayList<>();
 		List<CutLengthRecord> masterCutList = new ArrayList<>();
 
-		FileInputStream fis = new FileInputStream(
-				"C:\\Users\\NITISH JAGANWAR\\Downloads\\Schneider Electric -Cable\\POWER CABLE SCEHDULE_Format.xlsx");
+		FileInputStream fis = new FileInputStream(inputFilePath);
 		Workbook workbook = new XSSFWorkbook(fis);
 		Sheet sheet = workbook.getSheet(sheetName);
 
@@ -63,35 +62,35 @@ public class Test {
 			return;
 		}
 
-		// for (int i = startRowIndex; i < numberOfRecordsToProcess; i++) {
+		for (int i = startRowIndex; i < numberOfRecordsToProcess; i++) {
 //
-		ExportRecord expRec = new ExportRecord();
-//			Row row = sheet.getRow(i);
-//			if (row == null)
-//				continue;
+			ExportRecord expRec = new ExportRecord();
+			Row row = sheet.getRow(i);
+			if (row == null)
+				continue;
 
-		// double cableSize =2.5;
-		// int initialRuns=1;
-//			String sNo = getSafeString(row.getCell(0)); // A
-//			String cableTagNo = getSafeString(row.getCell(1)); // B
-//			String feederNo = getSafeString(row.getCell(2)); // C
-//			String pannel = getSafeString(row.getCell(3)); // D
-//			String destinationTag = getSafeString(row.getCell(5)); // F
-//			String loadType = getSafeString(row.getCell(8)); // I
-//			String starterType = getSafeString(row.getCell(9)); // J
-//			double loadFactor = getSafeNumeric(row.getCell(11), 0); // L
-//			double voltage = getSafeNumeric(row.getCell(12), 0); // M
-//			int feederQty = (int) getSafeNumeric(row.getCell(13), 0); // N
-//			double singleUnitRatingKw = getSafeNumeric(row.getCell(14), 0); // O
-//
-//			double effPercent = getSafeNumeric(row.getCell(22), 0); // W
-//
-//			double cableSize = getSafeNumeric(row.getCell(25), 0); // Z
-//
-//			double upstreamRunningVoltageDrop = getSafeNumeric(row.getCell(34), 0.0); // AI
-//
-//			int initialRuns = (int) getSafeNumeric(row.getCell(39), 0); // AN
-//			double unitLength = getSafeNumeric(row.getCell(44), 0); // AS
+			// double cableSize =2.5;
+			// int initialRuns=1;
+			String sNo = getSafeString(row.getCell(0)); // A
+			String cableTagNo = getSafeString(row.getCell(1)); // B
+			String feederNo = getSafeString(row.getCell(2)); // C
+			String pannel = getSafeString(row.getCell(3)); // D
+			String destinationTag = getSafeString(row.getCell(5)); // F
+			String loadType = getSafeString(row.getCell(8)); // I
+			String starterType = getSafeString(row.getCell(9)); // J
+			double loadFactor = getSafeNumeric(row.getCell(11), 0); // L
+			double voltage = getSafeNumeric(row.getCell(12), 0); // M
+			int feederQty = (int) getSafeNumeric(row.getCell(13), 0); // N
+			double singleUnitRatingKw = getSafeNumeric(row.getCell(14), 0); // O
+
+			double effPercent = getSafeNumeric(row.getCell(22), 0); // W
+
+			double cableSize = getSafeNumeric(row.getCell(25), 0); // Z
+
+			double upstreamRunningVoltageDrop = getSafeNumeric(row.getCell(34), 0.0); // AI
+
+			int initialRuns = (int) getSafeNumeric(row.getCell(39), 0); // AN
+			double unitLength = getSafeNumeric(row.getCell(44), 0); // AS
 
 //			String sNo = getSafeString(row.getCell(1)); // B
 //			String cableTagNo = getSafeString(row.getCell(2)); // C
@@ -114,75 +113,78 @@ public class Test {
 //			int initialRuns = (int) getSafeNumeric(row.getCell(24), 0); // AO
 //			double unitLength = getSafeNumeric(row.getCell(45), 0); // AT
 
-		String layingMode = "AIR";
-		String efficiencyClass = "IE3";
-		String sNo = "1";
-		// String cableTagNo = "PCC/2F2/1";
-		String feederNo = "2F2";
-		String pannel = "PCC";
-		String destinationTag = "";
-		String loadType = "Panel";
-		String starterType = "ACB";
-		double loadFactor = 0.7;
-		double voltage = 415.0;
-		int feederQty = 1;
-		double singleUnitRatingKw = 1678.32;
-		double effPercent = 90;
-		double cableSize = 400;
-		double upstreamRunningVoltageDrop = 0.10;
-		int initialRuns = 1;
-		double unitLength = 62;
-		String cableTagNo = pannel + "/" + feederNo + "/" + destinationTag + sNo;
+			String layingMode = "AIR";
+			String efficiencyClass = "IE3";
+//			String sNo = "1";
+//			// String cableTagNo = "PCC/2F2/1";
+//			String feederNo = "2F2";
+//			String pannel = "PCC";
+//			String destinationTag = "";
+//			String loadType = "Panel";
+//			String starterType = "ACB";
+//			double loadFactor = 0.7;
+//			double voltage = 415.0;
+//			int feederQty = 1;
+//			double singleUnitRatingKw = 1678.32;
+//			double effPercent = 90;
+//			double cableSize = 400;
+//			double upstreamRunningVoltageDrop = 0.10;
+//			int initialRuns = 1;
+//			double unitLength = 100;
+//			String cableTagNo = pannel + "/" + feederNo + "/" + destinationTag + sNo;
 
-		System.out.println("\n--- INPUT  PARAMETERS ---");
-		System.out.println("[B] S No : " + sNo);
-		System.out.println("[C] Cable Tag No : " + cableTagNo);
-		System.out.println("[D] Feeder No : " + feederNo);
-		System.out.println("[E] Panel : " + pannel);
-		System.out.println("[G] Destination Tag : " + destinationTag);
-		System.out.println("[J] Load Type : " + loadType);
-		System.out.println("[K] Starter Type : " + starterType);
-		System.out.println("[M] Load Factor : " + loadFactor);
-		System.out.println("[N] Voltage : " + voltage);
-		System.out.println("[O] Feeder Qty : " + feederQty);
-		System.out.println("[P] Single Unit Rating (kW) : " + singleUnitRatingKw);
-		System.out.println("[X] Efficiency (%) : " + effPercent);
-		System.out.println("[AA] Cable Size : " + cableSize);
-		System.out.println("[AJ] Upstream Running Voltage Drop : " + upstreamRunningVoltageDrop);
-		System.out.println("[AO] Initial Runs : " + initialRuns);
-		System.out.println("[AT] Unit Length : " + unitLength);
+			System.out.println("\n--- INPUT  PARAMETERS ---");
+			System.out.println("[B] S No : " + sNo);
+			System.out.println("[C] Cable Tag No : " + cableTagNo);
+			System.out.println("[D] Feeder No : " + feederNo);
+			System.out.println("[E] Panel : " + pannel);
+			System.out.println("[G] Destination Tag : " + destinationTag);
+			System.out.println("[J] Load Type : " + loadType);
+			System.out.println("[K] Starter Type : " + starterType);
+			System.out.println("[M] Load Factor : " + loadFactor);
+			System.out.println("[N] Voltage : " + voltage);
+			System.out.println("[O] Feeder Qty : " + feederQty);
+			System.out.println("[P] Single Unit Rating (kW) : " + singleUnitRatingKw);
+			System.out.println("[X] Efficiency (%) : " + effPercent);
+			System.out.println("[AA] Cable Size : " + cableSize);
+			System.out.println("[AJ] Upstream Running Voltage Drop : " + upstreamRunningVoltageDrop);
+			System.out.println("[AO] Initial Runs : " + initialRuns);
+			System.out.println("[AT] Unit Length : " + unitLength);
 
-		inputFilePath = "C:\\Users\\NITISH JAGANWAR\\Desktop\\test\\SE\\temp\\cable_schedule.xlsm";
+			inputFilePath = "C:\\Users\\NITISH JAGANWAR\\Desktop\\test\\SE\\temp\\cable_schedule.xlsm";
 
-//			if (cableTagNo == null || cableTagNo.trim().isEmpty()) {
-//				System.out.println("Skipping empty row at: " + row.getRowNum());
-//				continue; // Skip this row
-//			}
-//			if (loadType == null || loadType.trim().isEmpty()) {
-//				System.out.println("⚠️ Skipping separator/header row at: " + row.getRowNum());
-//				continue; // Skip this row
-//			}
+			if (cableTagNo == null || cableTagNo.trim().isEmpty()) {
+				System.out.println("Skipping empty row at: " + row.getRowNum());
+				continue; // Skip this row
+			}
+			if (loadType == null || loadType.trim().isEmpty()) {
+				System.out.println("⚠️ Skipping separator/header row at: " + row.getRowNum());
+				continue; // Skip this row
+			}
 
-		List<CutLengthRecord> rowCuts = processcable(engine, inputFilePath, sNo, feederNo, pannel, destinationTag,
-				loadType, starterType, loadFactor, voltage, feederQty, singleUnitRatingKw, effPercent, efficiencyClass,
-				cableSize, layingMode, initialRuns, unitLength, upstreamRunningVoltageDrop, cableTagNo, expRec);
-
-		for (CutLengthRecord record : rowCuts) {
-			System.out.println(record);
-		}
-
-//			expRec.tagNo = cableTagNo;
+			List<CutLengthRecord> rowCuts = processcable(engine, inputFilePath, sNo, feederNo, pannel, destinationTag,
+					loadType, starterType, loadFactor, voltage, feederQty, singleUnitRatingKw, effPercent,
+					efficiencyClass, cableSize, layingMode, initialRuns, unitLength, upstreamRunningVoltageDrop,
+					cableTagNo, expRec);
 //
-//			if (expRec.optResult != null) {
-//				masterOptResults.add(expRec);
+//			for (CutLengthRecord record : rowCuts) {
+//				System.out.println(record);
 //			}
-		if (rowCuts != null && !rowCuts.isEmpty()) {
-			masterCutList.addAll(rowCuts);
-		}
+
+			expRec.tagNo = cableTagNo;
+
+			if (expRec.optResult != null) {
+				masterOptResults.add(expRec);
+			}
+			if (rowCuts != null && !rowCuts.isEmpty()) {
+				masterCutList.addAll(rowCuts);
+			}
 //
 //			System.out.println("✅ Processed Row " + (row.getRowNum() + 1) + ": " + cableTagNo);
-
-//	}
+//			for (CutLengthRecord record : rowCuts) {
+//				System.out.println(record);
+//			}
+		}
 
 		DrumScheduleGenerator drumGenerator = new DrumScheduleGenerator();
 
@@ -192,15 +194,19 @@ public class Test {
 		List<DrumRecord> combinedDrumSchedule = drumGenerator.generateLinkedDrumSchedule(masterCutList,
 				maxDrumLimitSmall, maxDrumLimitLarge);
 
+		for (CutLengthRecord record : masterCutList) {
+			System.out.println(record);
+		}
+		System.out.println("=================================================\n");
 		for (DrumRecord record : combinedDrumSchedule) {
 			System.out.println(record);
 		}
 		// CableExcelExporter.exportBatchResults(outputFilePath, masterOptResults,
 		// masterCutList, combinedDrumSchedule);
 
-		for (CutLengthRecord record : rowCuts) {
-			System.out.println(record);
-		}
+		System.out.println("\n✅ Batch Processing Completed. Results exported to: " + outputFilePath);
+
+		SiteExecutionTestRunner.Test();
 	}
 
 	private static List<CutLengthRecord> processcable(CalculationEngine engine, String filePath, String sNo,
@@ -306,6 +312,12 @@ public class Test {
 		record.limitE14 = limitE14;
 		record.limitE15 = limitE15;
 
+		record.isUserOverride=true;
+		record.customSize=300.0;
+		record.customRuns=7;
+		
+		
+		
 		// (Original Length = 6 * 62 = 372.0)
 		record.cableLen = unitLength * initialRuns;
 
@@ -314,62 +326,62 @@ public class Test {
 			System.out.println("❌ Error: Excel  Limits Not checked check sheet name  .");
 			return new ArrayList<>();
 		}
-		System.out.println("\n--- CALCULATED ELECTRICAL PARAMETERS ---");
-
-		System.out.printf("[P] Total kW            : %.2f kW\n", totalKw);
-		System.out.printf("[Q] Rating (kVA)        : %.2f kVA\n", ratingKva);
-		System.out.printf("[R] Full Load Current   : %.2f A\n", fullLoadCurrent);
-		System.out.printf("[S] Starting Current    : %s\n",
-				(startingCurrent == null ? "-NA-" : String.format("%.2f A", startingCurrent)));
-		System.out.printf("[T] Full Load PF        : %.2f\n", fullLoadPf);
-		System.out.printf("[U] Starting PF         : %s\n",
-				(startingPf == null) ? "-NA-" : String.format("%.2f", startingPf));
-		System.out.printf("[V] Efficiency INPUT  : %.4f\n", effPercent);
-		System.out.printf("[W] CALCULATED Efficiency          : %.2f%%\n", effPercent2);
-
-		System.out.printf("[Y] Number of Cores     : %.1f\n", noOfCores);
-		System.out.printf("[AA] Derating Factor    : %s\n",
-				(deratingFactor != null ? String.format("%.4f", deratingFactor) : "Fetch Failed"));
-		System.out.printf("[AB] Base Ampacity      : %s\n",
-				(totalCurrentRating != null ? String.format("%.2f A", totalCurrentRating) : "Fetch Failed"));
-
-		System.out.printf("[AB] Base Ampacity " + baseAmpacity + "\n");
-		System.out.printf("[AC] Derated Current    : %s\n",
-				(deratedCurrent != null ? String.format("%.2f A", deratedCurrent) : "Failed"));
-
-		System.out.printf("[AD] Resistance (R)     : %s Ohms/km\n",
-				(cableResistance != null ? String.format("%.4f", cableResistance) : "Fetch Failed"));
-		System.out.printf("[AE] Reactance (X)      : %s Ohms/km\n",
-				(cableReactance != null ? String.format("%.4f", cableReactance) : "Fetch Failed"));
-		System.out.printf("[AF] Starting Volt Drop (%%): %s\n",
-				(startingVoltageDrop != null ? String.format("%.2f%%", startingVoltageDrop) : "-NA-"));
-		System.out.printf("[AG] Total Start VD (%%) : %s\n",
-				(totalStartingVoltageDrop != null ? String.format("%.2f%%", totalStartingVoltageDrop) : "-NA-"));
-
-		System.out.printf("[AH] Running VD (%%)     : %s\n",
-				(runningVoltageDrop != null ? String.format("%.2f%%", runningVoltageDrop) : "Failed"));
-
-		System.out.println("[AI] Upstream Running Voltage Drop (%) :" + upstreamRunningVoltageDrop);
-		System.out.println("[AJ] Total Running Voltage Drop (%) :"
-				+ (totalRunningVoltageDrop != null ? String.format("%.2f%%", totalRunningVoltageDrop) : "Failed"));
-
-		System.out.println("\n--- VALIDATIONS ---");
-		System.out.printf("[AK] Capacity Status    : %s\n", capacityValidationStatus);
-		System.out.printf("[AL] Volt Drop Status   : %s\n", vdValidationStatus);
-		System.out.printf("[AM] FINAL VALIDATION   : %s\n", finalValidation);
-		System.out.println("\n--- VALIDATIONS ---");
-		System.out.printf("[AN] Final No. of Runs  : %d\n", initialRuns);
-		System.out.printf("[AO] Formatted Size     : %s\n", formattedSize);
-		System.out.printf("[AP] Cable Type         : %s\n", (cableType != null ? cableType : "Not Found"));
-		System.out.printf("[AQ] Cable Code         : %s\n", cableCode);
-		System.out.printf("[AR] Cable Laying Mode  : %s\n", layingMode); // Defaulted
-		System.out.printf("[AT] Total Length (m)   : %.1f\n", totalLength);
-		System.out.printf("[AU] Cable Diameter     : %.1f mm\n", (cableDiameter != null ? cableDiameter : 0.0));
-		System.out.printf("[AV] Total Diameter     : %.1f mm\n",
-				(totalCableDiameter != null ? totalCableDiameter : 0.0));
-		System.out.printf("[AW] Lugs Qty (Nos)     : %d\n", lugsQty);
-		System.out.printf("[AX] Glands Qty (Nos)   : %d\n", glandsQty);
-		System.out.printf("[AY] Cable Selected     : %s\n", cableSelected);
+//		System.out.println("\n--- CALCULATED ELECTRICAL PARAMETERS ---");
+//
+//		System.out.printf("[P] Total kW            : %.2f kW\n", totalKw);
+//		System.out.printf("[Q] Rating (kVA)        : %.2f kVA\n", ratingKva);
+//		System.out.printf("[R] Full Load Current   : %.2f A\n", fullLoadCurrent);
+//		System.out.printf("[S] Starting Current    : %s\n",
+//				(startingCurrent == null ? "-NA-" : String.format("%.2f A", startingCurrent)));
+//		System.out.printf("[T] Full Load PF        : %.2f\n", fullLoadPf);
+//		System.out.printf("[U] Starting PF         : %s\n",
+//				(startingPf == null) ? "-NA-" : String.format("%.2f", startingPf));
+//		System.out.printf("[V] Efficiency INPUT  : %.4f\n", effPercent);
+//		System.out.printf("[W] CALCULATED Efficiency          : %.2f%%\n", effPercent2);
+//
+//		System.out.printf("[Y] Number of Cores     : %.1f\n", noOfCores);
+//		System.out.printf("[AA] Derating Factor    : %s\n",
+//				(deratingFactor != null ? String.format("%.4f", deratingFactor) : "Fetch Failed"));
+//		System.out.printf("[AB] Base Ampacity      : %s\n",
+//				(totalCurrentRating != null ? String.format("%.2f A", totalCurrentRating) : "Fetch Failed"));
+//
+//		System.out.printf("[AB] Base Ampacity " + baseAmpacity + "\n");
+//		System.out.printf("[AC] Derated Current    : %s\n",
+//				(deratedCurrent != null ? String.format("%.2f A", deratedCurrent) : "Failed"));
+//
+//		System.out.printf("[AD] Resistance (R)     : %s Ohms/km\n",
+//				(cableResistance != null ? String.format("%.4f", cableResistance) : "Fetch Failed"));
+//		System.out.printf("[AE] Reactance (X)      : %s Ohms/km\n",
+//				(cableReactance != null ? String.format("%.4f", cableReactance) : "Fetch Failed"));
+//		System.out.printf("[AF] Starting Volt Drop (%%): %s\n",
+//				(startingVoltageDrop != null ? String.format("%.2f%%", startingVoltageDrop) : "-NA-"));
+//		System.out.printf("[AG] Total Start VD (%%) : %s\n",
+//				(totalStartingVoltageDrop != null ? String.format("%.2f%%", totalStartingVoltageDrop) : "-NA-"));
+//
+//		System.out.printf("[AH] Running VD (%%)     : %s\n",
+//				(runningVoltageDrop != null ? String.format("%.2f%%", runningVoltageDrop) : "Failed"));
+//
+//		System.out.println("[AI] Upstream Running Voltage Drop (%) :" + upstreamRunningVoltageDrop);
+//		System.out.println("[AJ] Total Running Voltage Drop (%) :"
+//				+ (totalRunningVoltageDrop != null ? String.format("%.2f%%", totalRunningVoltageDrop) : "Failed"));
+//
+//		System.out.println("\n--- VALIDATIONS ---");
+//		System.out.printf("[AK] Capacity Status    : %s\n", capacityValidationStatus);
+//		System.out.printf("[AL] Volt Drop Status   : %s\n", vdValidationStatus);
+//		System.out.printf("[AM] FINAL VALIDATION   : %s\n", finalValidation);
+//		System.out.println("\n--- VALIDATIONS ---");
+//		System.out.printf("[AN] Final No. of Runs  : %d\n", initialRuns);
+//		System.out.printf("[AO] Formatted Size     : %s\n", formattedSize);
+//		System.out.printf("[AP] Cable Type         : %s\n", (cableType != null ? cableType : "Not Found"));
+//		System.out.printf("[AQ] Cable Code         : %s\n", cableCode);
+//		System.out.printf("[AR] Cable Laying Mode  : %s\n", layingMode); // Defaulted
+//		System.out.printf("[AT] Total Length (m)   : %.1f\n", totalLength);
+//		System.out.printf("[AU] Cable Diameter     : %.1f mm\n", (cableDiameter != null ? cableDiameter : 0.0));
+//		System.out.printf("[AV] Total Diameter     : %.1f mm\n",
+//				(totalCableDiameter != null ? totalCableDiameter : 0.0));
+//		System.out.printf("[AW] Lugs Qty (Nos)     : %d\n", lugsQty);
+//		System.out.printf("[AX] Glands Qty (Nos)   : %d\n", glandsQty);
+//		System.out.printf("[AY] Cable Selected     : %s\n", cableSelected);
 
 		CableOptimizer optimizer = new CableOptimizer(engine, filePath);
 		OptimizationResult result = optimizer.optimize(record);
@@ -413,7 +425,7 @@ public class Test {
 		System.out.printf("Status                          : %s%n", result.status);
 		System.out.printf("Optimized No. of Runs           : %s%n", (result.bestRuns > 0 ? result.bestRuns : "-"));
 		System.out.printf("Optimized Cable Size (Sq. mm)   : %s Sqmm%n", (result.bestSize > 0 ? result.bestSize : "-"));
-		System.out.printf("Optimized No of Cores           :%d%n", (long) result.bestCores);
+		System.out.printf("Optimized No of Cores           :%.1f%n",result.bestCores);
 		System.out.printf("Optimized Lowest Cost COMBINATION: %s%n", result.combinationString);
 		System.out.printf("Optimized Lowest Cost            : Rs. %d%n", (long) result.minCost);
 		System.out.printf("Solution with min no of runs    : %d%n", result.minRun_Runs);
@@ -458,7 +470,7 @@ public class Test {
 		System.out.println("Validation");
 		System.out.println("capacityValidationStatus : " + result.capacityStatus);
 		System.out.println("vdValidationStatus       : " + result.vdStatus);
-		System.out.println("finalValidation          : " + result.status);
+		System.out.println("finalValidation          : " + result.finalValidation);
 		System.out.println("No Of Joints : " + result.totalJoints);
 		System.out.println("--------------------------------");
 		System.out.println("matrix:\n" + result.matrix);

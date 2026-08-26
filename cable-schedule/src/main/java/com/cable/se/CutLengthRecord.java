@@ -9,11 +9,13 @@ public class CutLengthRecord {
     public String cableType;                      //cableType 
     public String orderingDrumNumber = "";       //orderingDrumNumber:  Planned Drum Number assigned during drum schedule generation
    
-    public double actualLength;                 // actualLength : Actual length after drum schedule/dispatch
+    public double actualLength;                 //actualLength : Actual length after drum schedule/dispatch
     public String slitStatus    = "No";        // slitStatus: Status (Slit)  : Default "No" 
     public String manufacturerDrumNumber = ""; // manufacturerDrumNo 
    
     
+    public String executionStatus;
+    public boolean shortageAlert = false; // shortageAlert : True if actualLength > cableLength
     public String slit = "";
     public String cutLength = "";
     public String cutFromWhichDrum = "";
