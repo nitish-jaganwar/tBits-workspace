@@ -1,0 +1,26 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.svn</groupId>
+  <artifactId>test-svn</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+  
+  <dependencies>
+   <dependency>
+        <groupId>org.tmatesoft.svnkit</groupId>
+        <artifactId>svnkit</artifactId>
+        <version>1.10.3</version>
+    </dependency>
+   <!-- LZ4 : Required by SVNKit for compression (missing dependency) -->
+    <dependency>
+        <groupId>org.lz4</groupId>
+        <artifactId>lz4-java</artifactId>
+        <version>1.8.0</version>
+    </dependency>
+    <dependency>
+    <groupId>org.tmatesoft.sqljet</groupId>
+    <artifactId>sqljet</artifactId>
+    <version>1.1.15</version>
+</dependency>
+    </dependencies>
+    
+</project>
