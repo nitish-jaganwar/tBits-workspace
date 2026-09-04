@@ -8,9 +8,20 @@ public class DrumRecord {
     public String cutDetails;           // cutDetails
     public double maxDrumLimit; 
     
-    public double drumBalancedLength;       // drumBalancedLength :Remaining buffer length = drumActualLength - exactOrderedLength
-    public String manufacturerDrumNo = ""; // Vendor Drum Tag Number
+    //Display name : Actual Available Length
+   // public double drumBalancedLength; chnage to actualAvailableLength
+    public double actualAvailableLength;  
+  
+    public String manufacturerDrumNo = ""; 
     public double manufacturerActualDrumLength;
+   
+    //Planned Left Over Length
+    public double plannedLeftOverLength;
+    
+    // this is for site execution purpose, to know the cable type, core and diameter size of the drum
+    public String cableType;
+    public double core;
+    public double diameterSize;
     
     @Override
     public String toString() {
@@ -21,9 +32,13 @@ public class DrumRecord {
                 ", totalPieces=" + totalPieces +
                 ", cutDetails='" + cutDetails + '\'' +
                 ", maxDrumLimit=" + maxDrumLimit +
-                ", drumBalancedLength=" + drumBalancedLength +
+                ", actualAvailableLength=" + actualAvailableLength +
                 ", manufacturerDrumNo=" + manufacturerDrumNo +
                  ", manufacturerActualDrumLength=" + manufacturerActualDrumLength +
+                  ", plannedLeftOverLength=" + plannedLeftOverLength +
+                  ", cableType='" + cableType + '\'' +
+                  ", core=" + core +
+                  ", diameterSize=" + diameterSize +
                 '}';
     }
 }
