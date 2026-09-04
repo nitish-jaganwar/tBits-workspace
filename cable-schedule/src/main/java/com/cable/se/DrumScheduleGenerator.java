@@ -133,6 +133,11 @@ public class DrumScheduleGenerator {
         drum.maxDrumLimit = maxLimit;
         drum.totalPieces = cuts.size();
 
+        CutLengthRecord referenceCut = cuts.get(0);
+        drum.cableType = referenceCut.cableType;
+        drum.core = referenceCut.core;
+        drum.diameterSize = referenceCut.diameterSize;
+        
         double totalLen = 0.0;
         Map<String, Integer> cutCounts = new LinkedHashMap<>();
         Map<String, Double> cutLengths = new LinkedHashMap<>();
