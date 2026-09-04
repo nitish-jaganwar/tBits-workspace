@@ -5,22 +5,19 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.google.ortools.Loader;
+import com.google.ortools.sat.BoolVar;
+import com.google.ortools.sat.CpModel;
+import com.google.ortools.sat.CpSolver;
+import com.google.ortools.sat.CpSolverStatus;
+import com.google.ortools.sat.LinearExpr;
+import com.google.ortools.sat.LinearExprBuilder;
 
 public class DrumScheduleGenerator {
 
-    // Helper class to track active/open drums during processing
-    private static class ActiveDrum {
-        int drumNumber;
-        double currentLength;
-        double maxCapacity;
-        List<CutLengthRecord> cuts;
-
-        public ActiveDrum(int drumNumber, double maxCapacity) {
-            this.drumNumber = drumNumber;
-            this.maxCapacity = maxCapacity;
-            this.currentLength = 0.0;
-            this.cuts = new ArrayList<>();
-        }
+    // Load the native C++ libraries for OR-Tools
+    static {
+        Loader.loadNativeLibraries();
     }
 
     public List<DrumRecord> generateLinkedDrumSchedule(List<CutLengthRecord> masterCutList, 
@@ -39,54 +36,100 @@ public class DrumScheduleGenerator {
             String combination = entry.getKey();
             List<CutLengthRecord> cuts = entry.getValue();
 
-            List<ActiveDrum> activeDrums = new ArrayList<>();
-            int drumCounter = 1;
+            int numItems = cuts.size();
+            int numBins = cuts.size();
+            
+            // CP-SAT requires integers. Multiply by 100 to handle 2 decimal places.
+            long[] itemLengths = new long[numItems];
+            for (int i = 0; i < numItems; i++) {
+                itemLengths[i] = (long) Math.round(cuts.get(i).cableLength * 100.0);
+            }
+            
+            double drumCapDouble = (cuts.get(0).diameterSize <= 70.0) ? limitSmall : limitLarge;
+            long binCapacity = (long) Math.round(drumCapDouble * 100.0);
 
-            for (CutLengthRecord cut : cuts) {
-                double maxDrumCapacity = (cut.diameterSize <= 70.0) ? limitSmall : limitLarge;
-                boolean placedInExistingDrum = false;
+            CpModel model = new CpModel();
 
-                // 1. First-Fit Algorithm: Try to fit the cut in any existing open drum
-                for (ActiveDrum drum : activeDrums) {
-                    // Safe floating point addition rounding to avoid precision issues
-                    double projectedLength = Math.round((drum.currentLength + cut.cableLength) * 100.0) / 100.0;
-                    
-                    if (projectedLength <= drum.maxCapacity) {
-                        drum.cuts.add(cut);
-                        drum.currentLength = projectedLength;
-                        cut.orderingDrumNumber = "Drum - " + drum.drumNumber;
-                        placedInExistingDrum = true;
-                        break; // Stop searching once we find a suitable drum
-                    }
-                }
-
-                // 2. If it couldn't fit anywhere, create a brand new drum
-                if (!placedInExistingDrum) {
-                    ActiveDrum newDrum = new ActiveDrum(drumCounter, maxDrumCapacity);
-                    newDrum.cuts.add(cut);
-                    
-                    // Safe rounding for initial length
-                    newDrum.currentLength = Math.round(cut.cableLength * 100.0) / 100.0; 
-                    
-                    cut.orderingDrumNumber = "Drum - " + newDrum.drumNumber;
-                    activeDrums.add(newDrum);
-                    
-                    drumCounter++; // Increment counter for the next possible new drum
+            // x[i][j] = 1 if item i is placed in bin j
+            BoolVar[][] x = new BoolVar[numItems][numBins];
+            for (int i = 0; i < numItems; i++) {
+                for (int j = 0; j < numBins; j++) {
+                    x[i][j] = model.newBoolVar("x_" + i + "_" + j);
                 }
             }
 
-            // 3. Finalize all drums for this specific cable combination
-            for (ActiveDrum drum : activeDrums) {
-                schedule.add(createDrumRecord(combination, drum.drumNumber, drum.cuts, drum.maxCapacity));
+            // y[j] = 1 if bin j is used
+            BoolVar[] y = new BoolVar[numBins];
+            for (int j = 0; j < numBins; j++) {
+                y[j] = model.newBoolVar("y_" + j);
+            }
+
+            // Constraint A: Each item must be placed in exactly one bin.
+            for (int i = 0; i < numItems; i++) {
+                model.addExactlyOne(x[i]);
+            }
+
+            // Constraint B: The sum of items in a bin cannot exceed the bin's capacity.
+            for (int j = 0; j < numBins; j++) {
+                LinearExprBuilder weightExpr = LinearExpr.newBuilder();
+                for (int i = 0; i < numItems; i++) {
+                    weightExpr.addTerm(x[i][j], itemLengths[i]);
+                }
+                model.addLessOrEqual(weightExpr, LinearExpr.term(y[j], binCapacity));
+            }
+
+            // Objective: Minimize the number of bins used
+            model.minimize(LinearExpr.sum(y));
+
+            CpSolver solver = new CpSolver();
+            CpSolverStatus status = solver.solve(model);
+
+            if (status == CpSolverStatus.OPTIMAL || status == CpSolverStatus.FEASIBLE) {
+                int drumCounter = 1;
+                for (int j = 0; j < numBins; j++) {
+                    if (solver.booleanValue(y[j])) { 
+                        List<CutLengthRecord> cutsInThisDrum = new ArrayList<>();
+                        for (int i = 0; i < numItems; i++) {
+                            if (solver.booleanValue(x[i][j])) {
+                                CutLengthRecord cut = cuts.get(i);
+                                // Apply the new naming format to the individual cut
+                                cut.orderingDrumNumber = generateDrumName(cut, drumCounter);
+                                cutsInThisDrum.add(cut);
+                            }
+                        }
+                        //  new naming format to the final drum record = 3.5C-120Sqmm-Drum-01
+                        String formattedDrumNo = generateDrumName(cutsInThisDrum.get(0), drumCounter);
+                        schedule.add(createDrumRecord(combination, formattedDrumNo, cutsInThisDrum, drumCapDouble));
+                        drumCounter++;
+                    }
+                }
+            } else {
+                System.err.println("The OR-Tools solver could not find a solution for combination: " + combination);
             }
         }
         return schedule;
     }
 
-    private DrumRecord createDrumRecord(String combo, int drumNo, List<CutLengthRecord> cuts, double maxLimit) {
+    // Helper method to format the drum name cleanly
+    private String generateDrumName(CutLengthRecord cut, int drumNo) {
+        return String.format("%sC-%sSqmm-Drum-%02d", 
+                formatNumber(cut.core), 
+                formatNumber(cut.diameterSize), 
+                drumNo);
+    }
+
+    //remove the ".0" from round numbers (e.g., 120.0 -> 120)
+    private String formatNumber(double value) {
+        if (value == (long) value) {
+            return String.valueOf((long) value);
+        }
+        return String.valueOf(value);
+    }
+
+    private DrumRecord createDrumRecord(String combo, String formattedDrumNo, List<CutLengthRecord> cuts, double maxLimit) {
         DrumRecord drum = new DrumRecord();
         drum.cableCombination = combo;
-        drum.drumNo = "Drum - " + drumNo;
+        drum.drumNo = formattedDrumNo;
         drum.maxDrumLimit = maxLimit;
         drum.totalPieces = cuts.size();
 
@@ -96,7 +139,6 @@ public class DrumScheduleGenerator {
 
         for (CutLengthRecord c : cuts) {
             totalLen += c.cableLength;
-            // Use orderingTagNumber to differentiate split cut pieces in details
             String tagDetails = c.orderingTagNumber; 
             cutCounts.put(tagDetails, cutCounts.getOrDefault(tagDetails, 0) + 1);
             cutLengths.put(tagDetails, c.cableLength);
@@ -114,81 +156,3 @@ public class DrumScheduleGenerator {
         return drum;
     }
 }
-//public class DrumScheduleGenerator {
-//	
-//	public List<DrumRecord> generateLinkedDrumSchedule(List<CutLengthRecord> masterCutList, double limitSmall,
-//			double limitLarge) {
-//		List<DrumRecord> schedule = new ArrayList<>();
-//
-//		// Grouping cuts by combination
-//		Map<String, List<CutLengthRecord>> groupedCuts = new LinkedHashMap<>();
-//		for (CutLengthRecord cut : masterCutList) {
-//			String combo = cut.core + "C x " + cut.diameterSize + " Sqmm " + cut.cableType;
-//			groupedCuts.computeIfAbsent(combo, k -> new ArrayList<>()).add(cut);
-//		}
-//
-//		for (Map.Entry<String, List<CutLengthRecord>> entry : groupedCuts.entrySet()) {
-//			String combination = entry.getKey();
-//			List<CutLengthRecord> cuts = entry.getValue();
-//
-//			int drumCounter = 1;
-//			double currentDrumLength = 0.0;
-//			List<CutLengthRecord> currentDrumCuts = new ArrayList<>();
-//
-//			for (CutLengthRecord cut : cuts) {
-//				
-//				double maxDrumCapacity = (cut.diameterSize <= 70.0) ? limitSmall : limitLarge;
-//
-//				if (currentDrumLength + cut.cableLength > maxDrumCapacity && !currentDrumCuts.isEmpty()) {
-//					
-//					schedule.add(createDrumRecord(combination, drumCounter, currentDrumCuts, maxDrumCapacity));
-//					drumCounter++;
-//					currentDrumLength = 0.0;
-//					currentDrumCuts.clear();
-//				}
-//
-//				cut.orderingDrumNumber = "Drum - " + drumCounter;
-//				currentDrumCuts.add(cut);
-//				currentDrumLength += cut.cableLength;
-//			}
-//
-//			if (!currentDrumCuts.isEmpty()) {
-//				double maxDrumCapacity = (currentDrumCuts.get(0).diameterSize <= 70.0) ? limitSmall : limitLarge;
-//				schedule.add(createDrumRecord(combination, drumCounter, currentDrumCuts, maxDrumCapacity));
-//			}
-//		}
-//		return schedule;
-//	}
-//
-//
-//	private DrumRecord createDrumRecord(String combo, int drumNo, List<CutLengthRecord> cuts, double maxLimit) {
-//		DrumRecord drum = new DrumRecord();
-//		drum.cableCombination = combo;
-//		drum.drumNo = "Drum - " + drumNo;
-//		drum.maxDrumLimit = maxLimit; 
-//		drum.totalPieces = cuts.size();
-//
-//		double totalLen = 0;
-//		Map<String, Integer> cutCounts = new LinkedHashMap<>();
-//		Map<String, Double> cutLengths = new LinkedHashMap<>();
-//
-//		for (CutLengthRecord c : cuts) {
-//			totalLen += c.cableLength;
-//			String tag = c.orgTagNumber;
-//			cutCounts.put(tag, cutCounts.getOrDefault(tag, 0) + 1);
-//			cutLengths.put(tag, c.cableLength);
-//			
-//			
-//	               
-//		}
-//
-//		drum.exactOrderedLength = Math.round(totalLen * 100.0) / 100.0;
-//		StringBuilder details = new StringBuilder();
-//		for (String tag : cutCounts.keySet()) {
-//			details.append(tag).append(": ").append(cutCounts.get(tag)).append(" cuts x ").append(cutLengths.get(tag))
-//					.append("m each\n");
-//		}
-//		drum.cutDetails = details.toString().trim();
-//		return drum;
-//	}
-//}
