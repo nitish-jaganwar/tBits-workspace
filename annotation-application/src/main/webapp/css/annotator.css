@@ -572,3 +572,7 @@ body {
     cursor: pointer; transition: 0.2s;
 }
 .cc-reply-btn:hover { background: var(--blue); color: white; }
+
+#text-comment-popup textarea::-webkit-scrollbar { display: none; }
+#text-comment-popup { animation: tcpFadeIn 0.12s ease; }
+@keyframes tcpFadeIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:none; } }

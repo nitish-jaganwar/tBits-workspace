@@ -1,10 +1,7 @@
 package com.annotator.ws;
 
-import java.io.IOException;
 import java.net.URLDecoder;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -18,6 +15,9 @@ import javax.websocket.OnOpen;
 import javax.websocket.Session;
 import javax.websocket.server.PathParam;
 import javax.websocket.server.ServerEndpoint;
+
+import com.annotator.security.GoogleTokenVerifier;
+import com.google.api.client.googleapis.auth.oauth2.GoogleIdToken;
 
 @ServerEndpoint("/ws-annotator/{documentId}")
 public class AnnotationWebSocket {
@@ -43,23 +43,51 @@ public class AnnotationWebSocket {
 		return null;
 	}
 
+//	@OnOpen
+//	public void onOpen(Session session, @PathParam("documentId") String documentId) {
+//		String token = extractToken(session.getQueryString());
+//
+//		if (token == null || token.isEmpty()) {
+//			System.err.println("❌ Rejected: No Token");
+//			try {
+//				session.close(new CloseReason(CloseReason.CloseCodes.VIOLATED_POLICY, "Unauthorized"));
+//			} catch (IOException ignored) {
+//			}
+//			return;
+//		}
+//
+//		session.getUserProperties().put("documentId", documentId);
+//		documentRooms.computeIfAbsent(documentId, k -> Collections.synchronizedSet(new HashSet<>())).add(session);
+//
+//		System.out.println("✅ Connected to room: " + documentId);
+//	}
+	
 	@OnOpen
 	public void onOpen(Session session, @PathParam("documentId") String documentId) {
-		String token = extractToken(session.getQueryString());
+	    try {
+	        // URL params are automatically decoded by the container, so we can directly access them
+	        String token = session.getRequestParameterMap().get("token").get(0);
+	        
+	        //  OIDC Token Verify with Google API Client Library
+	        GoogleIdToken.Payload userPayload = GoogleTokenVerifier.verifyToken(token);
+	        
+	        if (userPayload == null) {
+	            System.out.println("🚨 WebSocket Connection Blocked: Invalid Google Token!");
+	            session.close(new CloseReason(CloseReason.CloseCodes.VIOLATED_POLICY, "Unauthorized OIDC Token"));
+	            return;
+	        }
 
-		if (token == null || token.isEmpty()) {
-			System.err.println("❌ Rejected: No Token");
-			try {
-				session.close(new CloseReason(CloseReason.CloseCodes.VIOLATED_POLICY, "Unauthorized"));
-			} catch (IOException ignored) {
-			}
-			return;
-		}
+	      // Store documentId in session for later cleanup
+	        String userName = (String) userPayload.get("name");
+	        String userEmail = userPayload.getEmail();
+	        System.out.println("✅ Secure Connection Established for: " + userName + " (" + userEmail + ") in Room: " + documentId);
 
-		session.getUserProperties().put("documentId", documentId);
-		documentRooms.computeIfAbsent(documentId, k -> Collections.synchronizedSet(new HashSet<>())).add(session);
-
-		System.out.println("✅ Connected to room: " + documentId);
+	        // FIX : Use thread-safe Set implementation for concurrent access
+	        documentRooms.computeIfAbsent(documentId, k -> ConcurrentHashMap.newKeySet()).add(session);
+	        
+	    } catch (Exception e) {
+	        System.out.println("WebSocket Open Error: " + e.getMessage());
+	    }
 	}
 
 	@OnMessage
